@@ -513,6 +513,23 @@ document.addEventListener('DOMContentLoaded', function () {
 
     var chatInput = document.getElementById('chatInput');
     var chatSendBtn = document.getElementById('chatSendBtn');
+    var chatVisibility = 'public';
+    var visToggle = document.getElementById('chatVisibilityToggle');
+
+    if (chatRole === 'agent' && visToggle) {
+      visToggle.style.display = 'flex';
+      visToggle.querySelectorAll('.vis-chip').forEach(function (chip) {
+        chip.addEventListener('click', function () {
+          visToggle.querySelectorAll('.vis-chip').forEach(function (c) { c.classList.remove('active'); });
+          chip.classList.add('active');
+          chatVisibility = chip.dataset.visibility;
+          chatSendBtn.textContent = chatVisibility === 'internal' ? 'Add note' : 'Send';
+          chatInput.placeholder = chatVisibility === 'internal'
+            ? 'Add an internal note — not visible to the customer'
+            : 'Type a message… share the steps to fix this issue';
+        });
+      });
+    }
 
     if (!chatTicket) {
       document.getElementById('chatTicketId').textContent = 'Ticket not found';
@@ -549,17 +566,25 @@ document.addEventListener('DOMContentLoaded', function () {
 
       var renderChatMessages = function () {
         var msgs = loadChatMessages();
+        // Customers only ever see public comments; internal notes are agent/team-only.
+        if (chatRole === 'customer') {
+          msgs = msgs.filter(function (m) { return m.visibility !== 'internal'; });
+        }
         chatThread.innerHTML = '';
         if (!msgs.length) {
           chatThread.innerHTML = '<p class="chat-empty">No messages yet — say hello or share the steps to fix this.</p>';
           return;
         }
         msgs.forEach(function (m) {
+          var isInternal = m.visibility === 'internal';
           var mine = m.from === chatRole;
           var bubble = document.createElement('div');
-          bubble.className = 'chat-bubble ' + (mine ? 'out' : 'in');
+          bubble.className = 'chat-bubble ' + (isInternal ? 'internal' : (mine ? 'out' : 'in'));
+          var label = isInternal
+            ? (mine ? 'You · Internal note' : escapeHtml(m.name) + ' · Internal note')
+            : (mine ? 'You' : escapeHtml(m.name));
           bubble.innerHTML =
-            '<span class="chat-name">' + (mine ? 'You' : escapeHtml(m.name)) + '</span>' +
+            '<span class="chat-name">' + label + '</span>' +
             escapeHtml(m.text) +
             '<span class="chat-time">' + m.time + '</span>';
           chatThread.appendChild(bubble);
@@ -571,7 +596,8 @@ document.addEventListener('DOMContentLoaded', function () {
         var text = chatInput.value.trim();
         if (!text) return;
         var msgs = loadChatMessages();
-        msgs.push({ from: chatRole, name: chatActorName, text: text, time: formatChatTime(new Date()) });
+        var visibility = (chatRole === 'agent' && chatVisibility === 'internal') ? 'internal' : 'public';
+        msgs.push({ from: chatRole, name: chatActorName, text: text, time: formatChatTime(new Date()), visibility: visibility });
         localStorage.setItem(chatKey, JSON.stringify(msgs));
         chatInput.value = '';
         renderChatMessages();
