@@ -38,7 +38,10 @@
           <button type="button" class="vis-chip active" data-visibility="public">Public reply</button>
           <button type="button" class="vis-chip" data-visibility="internal">Internal note</button>
         </div>
+        <div class="file-list" id="chatFileList"></div>
         <div class="chat-input-row">
+          <button class="chat-attach-btn" id="chatAttachBtn" type="button" title="Attach files" aria-label="Attach files">📎</button>
+          <input type="file" id="chatAttachInput" multiple style="display:none;">
           <textarea class="chat-textarea" id="chatInput" placeholder="Type a message… share the steps to fix this issue" rows="1"></textarea>
           <button class="btn-amber btn-inline" id="chatSendBtn" type="button">Send</button>
         </div>

@@ -516,6 +516,62 @@ document.addEventListener('DOMContentLoaded', function () {
     var chatVisibility = 'public';
     var visToggle = document.getElementById('chatVisibilityToggle');
 
+    var chatEscapeHtml = function (str) {
+      return str.replace(/[&<>"']/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+      });
+    };
+
+    // Pending attachments for the message currently being composed
+    var chatFiles = [];
+    var chatAttachBtn = document.getElementById('chatAttachBtn');
+    var chatAttachInput = document.getElementById('chatAttachInput');
+    var chatFileListEl = document.getElementById('chatFileList');
+
+    function renderChatFiles() {
+      if (!chatFileListEl) return;
+      chatFileListEl.innerHTML = '';
+      chatFiles.forEach(function (name, i) {
+        var chip = document.createElement('span');
+        chip.className = 'file-chip';
+        chip.innerHTML = '<span>' + chatEscapeHtml(name) + '</span>';
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.setAttribute('aria-label', 'Remove ' + name);
+        btn.textContent = '✕';
+        btn.addEventListener('click', function () { chatFiles.splice(i, 1); renderChatFiles(); });
+        chip.appendChild(btn);
+        chatFileListEl.appendChild(chip);
+      });
+    }
+
+    if (chatAttachBtn && chatAttachInput) {
+      chatAttachBtn.addEventListener('click', function () { chatAttachInput.click(); });
+      chatAttachInput.addEventListener('change', function () {
+        Array.prototype.forEach.call(chatAttachInput.files, function (f) { chatFiles.push(f.name); });
+        chatAttachInput.value = '';
+        renderChatFiles();
+      });
+    }
+
+    // Keeps the ticket's "files attached" count (shown on the portal/agent dashboard) in sync
+    // whenever someone attaches files from the chat thread, not just at creation time.
+    function bumpTicketFileCount(ticketId, addCount) {
+      var allT = [];
+      try { allT = JSON.parse(localStorage.getItem('docketTickets')) || []; } catch (e) { allT = []; }
+      var match = allT.filter(function (x) { return x.id === ticketId; })[0];
+      if (match) {
+        match.files = (match.files || 0) + addCount;
+        localStorage.setItem('docketTickets', JSON.stringify(allT));
+      }
+      var latestT = null;
+      try { latestT = JSON.parse(localStorage.getItem('docketLatestTicket')); } catch (e) { latestT = null; }
+      if (latestT && latestT.id === ticketId) {
+        latestT.files = (latestT.files || 0) + addCount;
+        localStorage.setItem('docketLatestTicket', JSON.stringify(latestT));
+      }
+    }
+
     if (chatRole === 'agent' && visToggle) {
       visToggle.style.display = 'flex';
       visToggle.querySelectorAll('.vis-chip').forEach(function (chip) {
@@ -537,6 +593,7 @@ document.addEventListener('DOMContentLoaded', function () {
       document.getElementById('chatTicketPriority').style.display = 'none';
       chatInput.disabled = true;
       chatSendBtn.disabled = true;
+      if (chatAttachBtn) chatAttachBtn.disabled = true;
       chatThread.innerHTML = '<p class="chat-empty">This ticket could not be found in this browser.</p>';
     } else {
       document.getElementById('chatTicketId').textContent = chatTicket.id;
@@ -583,9 +640,16 @@ document.addEventListener('DOMContentLoaded', function () {
           var label = isInternal
             ? (mine ? 'You · Internal note' : escapeHtml(m.name) + ' · Internal note')
             : (mine ? 'You' : escapeHtml(m.name));
+          var filesHtml = '';
+          if (m.files && m.files.length) {
+            filesHtml = '<div class="chat-attachments">' + m.files.map(function (f) {
+              return '<span class="chat-attachment-chip">📎 ' + escapeHtml(f) + '</span>';
+            }).join('') + '</div>';
+          }
           bubble.innerHTML =
             '<span class="chat-name">' + label + '</span>' +
-            escapeHtml(m.text) +
+            (m.text ? escapeHtml(m.text) : '') +
+            filesHtml +
             '<span class="chat-time">' + m.time + '</span>';
           chatThread.appendChild(bubble);
         });
@@ -594,12 +658,21 @@ document.addEventListener('DOMContentLoaded', function () {
 
       var sendChatMessage = function () {
         var text = chatInput.value.trim();
-        if (!text) return;
+        if (!text && !chatFiles.length) return;
         var msgs = loadChatMessages();
         var visibility = (chatRole === 'agent' && chatVisibility === 'internal') ? 'internal' : 'public';
-        msgs.push({ from: chatRole, name: chatActorName, text: text, time: formatChatTime(new Date()), visibility: visibility });
+        var msg = { from: chatRole, name: chatActorName, text: text, time: formatChatTime(new Date()), visibility: visibility };
+        if (chatFiles.length) msg.files = chatFiles.slice();
+        msgs.push(msg);
         localStorage.setItem(chatKey, JSON.stringify(msgs));
         chatInput.value = '';
+        if (chatFiles.length) {
+          // Internal notes are agent/team-only, so their attachments shouldn't count toward
+          // the customer-visible "files attached" total shown on the portal.
+          if (visibility === 'public') bumpTicketFileCount(chatTicket.id, chatFiles.length);
+          chatFiles = [];
+          renderChatFiles();
+        }
         renderChatMessages();
       };
 
