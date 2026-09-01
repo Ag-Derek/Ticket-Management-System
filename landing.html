@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Docket — Support Ticket Portal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-step="0">
+<div class="scene">
+
+  <div class="topbar">
+    <a class="logo" href="landing.html">Docket.</a>
+    <div class="steps">
+      <span class="step-pill" data-step="0"><span class="num">1</span>Landing</span>
+      <span class="step-pill" data-step="1"><span class="num">2</span>Login</span>
+      <span class="step-pill" data-step="2"><span class="num">3</span>Profile</span>
+      <span class="step-pill" data-step="3"><span class="num">4</span>Ticket</span>
+      <span class="step-pill" data-step="4"><span class="num">5</span>Portal</span>
+    </div>
+    <button class="topbar-cta" type="button" style="visibility:hidden;" aria-hidden="true">Log in</button>
+  </div>
+
+  <section>
+    <div class="hero-grid">
+      <div>
+        <p class="eyebrow mo" data-delay="0">Every issue, numbered // Nothing falls through</p>
+        <h1 class="display mo" data-delay="80">Submit.<br>Track.<br>Resolve.</h1>
+        <div class="hero-copy mo" data-delay="180">
+          <p>Raise a request in under a minute. Docket routes it to the right team, keeps you posted, and closes the loop when it's fixed.</p>
+        </div>
+        <a class="btn-primary mo" data-delay="280" href="login.html">Get started →</a>
+      </div>
+
+      <div class="hero-visual">
+        <div class="ticket-stack">
+          <div class="ticket-card dark mo mo-float" data-delay="120">
+            <div class="tc-id">TKT—2026</div>
+            <div class="tc-label">Open<br>request</div>
+            <div class="tc-dots"><span></span><span></span><span></span></div>
+          </div>
+          <div class="ticket-card amber mo mo-float" data-delay="260">
+            <div class="tc-id">USR—2026</div>
+            <div class="tc-label">Your<br>profile</div>
+            <div class="tc-dots"><span></span><span></span><span></span></div>
+          </div>
+        </div>
+        <div class="float-card info mo mo-float" data-delay="420">
+          <div class="ic">✓</div>
+          <p class="headline">Set up once</p>
+          <p class="sub">Your details carry into every ticket you file.</p>
+        </div>
+        <div class="float-card stat mo mo-float" data-delay="540">
+          <div class="big">3 min</div>
+          <p class="sub">Average time to submit</p>
+          <div class="avatars"><span>JD</span><span>AK</span><span>+</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+<script src="app.js"></script>
+</body>
+</html>

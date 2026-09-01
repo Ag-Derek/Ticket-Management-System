@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Docket — Agent queue</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-app="agent">
+<div class="scene">
+
+  <div class="topbar">
+    <a class="logo" href="landing.html">Docket.</a>
+    <span class="console-badge"><span class="dot"></span>Agent Console</span>
+    <div class="topbar-actions">
+      <span class="agent-chip"><span class="av" id="agentChipInitials">—</span><span id="agentChipName">—</span></span>
+      <button class="btn-ghost btn-logout" type="button" id="agentLogoutBtn">Sign out</button>
+    </div>
+  </div>
+
+  <section class="portal-grid" id="agentQueue">
+
+    <!-- Agent profile -->
+    <aside class="card-panel profile-sidebar">
+      <div class="profile-avatar" id="agentInitials">—</div>
+      <h3 class="profile-name" id="agentName">—</h3>
+      <p class="profile-id" id="agentId">—</p>
+      <div class="profile-divider"></div>
+      <div class="profile-field">
+        <p class="k">Email</p>
+        <p class="v" id="agentEmailDisplay">—</p>
+      </div>
+      <div class="profile-field">
+        <p class="k">Assigned to me</p>
+        <p class="v" id="agentMineCount">—</p>
+      </div>
+    </aside>
+
+    <div class="portal-main">
+
+      <!-- Queue stats -->
+      <div class="card-panel wide">
+        <h2 style="font-size:26px;margin-bottom:16px;">Queue overview</h2>
+        <div class="meta-grid stats">
+          <div class="meta-box"><p class="k">Open</p><p class="v" id="statOpen">—</p></div>
+          <div class="meta-box"><p class="k">Critical</p><p class="v hot" id="statCritical">—</p></div>
+          <div class="meta-box"><p class="k">Unassigned</p><p class="v" id="statUnassigned">—</p></div>
+          <div class="meta-box"><p class="k">Resolved</p><p class="v" id="statResolved">—</p></div>
+        </div>
+      </div>
+
+      <!-- Selected ticket detail -->
+      <div class="card-panel wide">
+        <div id="queueEmpty" class="queue-empty" style="display:none;">
+          <h2>Queue is empty</h2>
+          <p class="lead" style="margin:0;">Tickets submitted through the customer portal will show up here.</p>
+        </div>
+
+        <div class="dash" id="agentDash">
+          <div class="dash-head">
+            <div>
+              <p class="dash-id" id="dashId">TKT-2026-000000</p>
+              <h2 style="margin:0;" id="dashSubject">Ticket subject</h2>
+            </div>
+            <span class="status-badge" id="dashStatusBadge">Assigned</span>
+          </div>
+
+          <div class="meta-grid">
+            <div class="meta-box"><p class="k">Category</p><p class="v" id="dashCategory">—</p></div>
+            <div class="meta-box"><p class="k">Priority</p><p class="v" id="dashPriority">—</p></div>
+            <div class="meta-box"><p class="k">Assigned team</p><p class="v" id="dashTeam">—</p></div>
+            <div class="meta-box"><p class="k">SLA</p><p class="v" id="dashSla" style="font-size:12.5px;">—</p></div>
+            <div class="meta-box"><p class="k">Attachments</p><p class="v" id="dashFiles">—</p></div>
+            <div class="meta-box"><p class="k">Requester</p><p class="v" id="dashEmail" style="font-size:12.5px;">—</p></div>
+          </div>
+
+          <div class="notify-banner">
+            <div class="ic">◆</div>
+            <p>Assigned agent: <strong id="dashAgent">Unassigned</strong></p>
+          </div>
+
+          <div class="action-row">
+            <button class="btn-amber btn-inline" id="assignToMeBtn" type="button">Assign to me</button>
+            <button class="btn-ghost btn-inline" id="resolveBtn" type="button">Mark resolved</button>
+            <a class="btn-ghost btn-inline" id="messageCustomerBtn" href="#">Message customer →</a>
+          </div>
+        </div>
+      </div>
+
+      <!-- Full queue -->
+      <div class="card-panel wide ticket-history">
+        <h3>All tickets</h3>
+        <div class="filter-row" id="filterRow">
+          <button class="filter-chip active" data-filter="All" type="button">All</button>
+          <button class="filter-chip" data-filter="Critical" type="button">Critical</button>
+          <button class="filter-chip" data-filter="High" type="button">High</button>
+          <button class="filter-chip" data-filter="Medium" type="button">Medium</button>
+          <button class="filter-chip" data-filter="Low" type="button">Low</button>
+          <button class="filter-chip" data-filter="Mine" type="button">Assigned to me</button>
+        </div>
+        <div class="history-list" id="queueList"></div>
+      </div>
+
+    </div>
+
+  </section>
+
+</div>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Docket — Ticket chat</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-app="chat">
+<div class="scene">
+
+  <div class="topbar">
+    <a class="logo" href="landing.html">Docket.</a>
+    <span class="console-badge" id="chatRoleBadge"><span class="dot"></span>—</span>
+    <div class="topbar-actions">
+      <button class="btn-ghost" id="chatBackBtn" type="button">← Back</button>
+    </div>
+  </div>
+
+  <section>
+    <div class="card-panel wide chat-card">
+      <div class="chat-head">
+        <div>
+          <p class="dash-id" id="chatTicketId">TKT-2026-000000</p>
+          <h2 id="chatTicketSubject">Ticket subject</h2>
+        </div>
+        <span class="history-chip" id="chatTicketPriority">Priority</span>
+      </div>
+
+      <div class="chat-thread" id="chatThread"></div>
+
+      <div class="chat-input-row">
+        <textarea class="chat-textarea" id="chatInput" placeholder="Type a message… share the steps to fix this issue" rows="1"></textarea>
+        <button class="btn-amber btn-inline" id="chatSendBtn" type="button">Send</button>
+      </div>
+    </div>
+  </section>
+
+</div>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Docket — Create ticket</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-step="3">
+<div class="scene">
+
+  <div class="topbar">
+    <a class="logo" href="landing.html">Docket.</a>
+    <div class="steps">
+      <span class="step-pill" data-step="0"><span class="num">1</span>Landing</span>
+      <span class="step-pill" data-step="1"><span class="num">2</span>Login</span>
+      <span class="step-pill" data-step="2"><span class="num">3</span>Profile</span>
+      <span class="step-pill" data-step="3"><span class="num">4</span>Ticket</span>
+      <span class="step-pill" data-step="4"><span class="num">5</span>Portal</span>
+    </div>
+    <button class="topbar-cta" type="button" style="visibility:hidden;" aria-hidden="true">Log in</button>
+  </div>
+
+  <section>
+    <div class="card-panel wide">
+
+      <!-- STATE 1: TICKET FORM -->
+      <div id="ticketForm">
+        <p class="eyebrow" id="requesterLine">Filing as a Docket user</p>
+        <h2>Create a ticket</h2>
+        <p class="lead">Tell us what's wrong. We'll route it, calculate the SLA, and keep you posted from here.</p>
+
+        <div class="field" id="f-subject">
+          <label for="subject">Subject</label>
+          <input type="text" id="subject" placeholder="e.g. Unable to access VPN">
+          <div class="err">Give the ticket a short subject.</div>
+        </div>
+
+        <div class="field" id="f-description">
+          <label for="description">Description</label>
+          <textarea id="description" placeholder="What's happening, and what have you already tried?"></textarea>
+          <div class="err">Add a description of the issue.</div>
+        </div>
+
+        <div class="row3">
+          <div class="field" id="f-category">
+            <label for="category">Category</label>
+            <select id="category">
+              <option value="">Select…</option>
+              <option>Network</option>
+              <option>Application</option>
+              <option>Hardware</option>
+              <option>Access &amp; Identity</option>
+            </select>
+            <div class="err">Choose a category.</div>
+          </div>
+          <div class="field" id="f-priority">
+            <label for="priority">Priority</label>
+            <select id="priority">
+              <option value="">Select…</option>
+              <option>Low</option>
+              <option>Medium</option>
+              <option>High</option>
+              <option>Critical</option>
+            </select>
+            <div class="err">Choose a priority.</div>
+          </div>
+          <div class="field">
+            <label for="service">Affected service <span class="opt">(optional)</span></label>
+            <input type="text" id="service" placeholder="e.g. Riskflow">
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Attachments <span class="opt">(optional)</span></label>
+          <label class="file-drop" for="attachments">Click to choose files — screenshots, logs, documents</label>
+          <input type="file" id="attachments" multiple style="display:none;">
+          <div class="file-list" id="fileList"></div>
+        </div>
+
+        <button class="btn-amber" id="submitTicket" type="button">Submit ticket</button>
+      </div>
+
+      <!-- STATE 2: EVENT PIPELINE (then redirects to portal.html) -->
+      <div class="pipeline" id="pipeline">
+        <h2>Publishing your ticket</h2>
+        <p class="lead">A <code>TicketCreated</code> event is on the queue — here's what's happening with it.</p>
+
+        <div class="pipe-step">
+          <div class="pipe-dot"><span class="pipe-spin"></span></div>
+          <div>
+            <p class="pipe-title">Ticket record created</p>
+            <p class="pipe-sub">Saved to the database with status NEW, event queued to RabbitMQ.</p>
+          </div>
+        </div>
+        <div class="pipe-step">
+          <div class="pipe-dot"><span class="pipe-spin"></span></div>
+          <div>
+            <p class="pipe-title">Assignment service</p>
+            <p class="pipe-sub">Matching category and workload → selecting a support team.</p>
+          </div>
+        </div>
+        <div class="pipe-step">
+          <div class="pipe-dot"><span class="pipe-spin"></span></div>
+          <div>
+            <p class="pipe-title">File service</p>
+            <p class="pipe-sub">Attachments moving to object storage, metadata linked to the ticket.</p>
+          </div>
+        </div>
+        <div class="pipe-step">
+          <div class="pipe-dot"><span class="pipe-spin"></span></div>
+          <div>
+            <p class="pipe-title">Notification service</p>
+            <p class="pipe-sub">Building the confirmation email via the Web3Forms provider.</p>
+          </div>
+        </div>
+        <div class="pipe-step">
+          <div class="pipe-dot"><span class="pipe-spin"></span></div>
+          <div>
+            <p class="pipe-title">Status → ASSIGNED</p>
+            <p class="pipe-sub">SLA clock started, ticket ready in the queue.</p>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+</div>
+<script src="app.js"></script>
+</body>
+</html>

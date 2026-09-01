@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Docket — Ticket portal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-step="4">
+<div class="scene">
+
+  <div class="topbar">
+    <a class="logo" href="landing.html">Docket.</a>
+    <div class="steps">
+      <span class="step-pill" data-step="0"><span class="num">1</span>Landing</span>
+      <span class="step-pill" data-step="1"><span class="num">2</span>Login</span>
+      <span class="step-pill" data-step="2"><span class="num">3</span>Profile</span>
+      <span class="step-pill" data-step="3"><span class="num">4</span>Ticket</span>
+      <span class="step-pill" data-step="4"><span class="num">5</span>Portal</span>
+    </div>
+    <div class="topbar-actions">
+      <button class="btn-ghost" type="button" id="backBtn">← Back</button>
+      <button class="btn-ghost btn-logout" type="button" id="logoutBtn">Logout</button>
+    </div>
+  </div>
+
+  <section class="portal-grid">
+
+    <!-- User profile -->
+    <aside class="card-panel profile-sidebar" id="profileSidebar">
+      <div class="profile-avatar" id="profileInitials">—</div>
+      <h3 class="profile-name" id="profileName">—</h3>
+      <p class="profile-id" id="profileId">—</p>
+      <div class="profile-divider"></div>
+      <div class="profile-field">
+        <p class="k">Email</p>
+        <p class="v" id="profileEmail">—</p>
+      </div>
+      <div class="profile-field">
+        <p class="k">Tickets filed</p>
+        <p class="v" id="profileTicketCount">—</p>
+      </div>
+    </aside>
+
+    <div class="portal-main">
+      <div class="card-panel wide">
+
+        <!-- Empty state: nothing submitted yet in this browser -->
+        <div id="portalEmpty" style="display:none;text-align:center;">
+          <h2>No ticket yet</h2>
+          <p class="lead">You haven't submitted a ticket in this browser.</p>
+          <a class="btn-amber" style="display:inline-block;width:auto;text-decoration:none;padding:14px 28px;" href="ticket.html">Create a ticket →</a>
+        </div>
+
+        <!-- Selected ticket detail (defaults to the latest ticket) -->
+        <div class="dash show" id="dash">
+          <div class="dash-head">
+            <div>
+              <p class="dash-id" id="dashId">TKT-2026-000000</p>
+              <h2 style="margin:0;" id="dashSubject">Ticket subject</h2>
+            </div>
+            <span class="status-badge" id="dashStatusBadge">Assigned</span>
+          </div>
+
+          <div class="meta-grid">
+            <div class="meta-box"><p class="k">Category</p><p class="v" id="dashCategory">—</p></div>
+            <div class="meta-box"><p class="k">Priority</p><p class="v" id="dashPriority">—</p></div>
+            <div class="meta-box"><p class="k">Assigned team</p><p class="v" id="dashTeam">—</p></div>
+            <div class="meta-box"><p class="k">SLA</p><p class="v" id="dashSla" style="font-size:12.5px;">—</p></div>
+            <div class="meta-box"><p class="k">Attachments</p><p class="v" id="dashFiles">—</p></div>
+            <div class="meta-box"><p class="k">Assigned agent</p><p class="v" id="dashAgent">—</p></div>
+          </div>
+
+          <div class="notify-banner">
+            <div class="ic">✉</div>
+            <p>Confirmation sent to <strong id="dashEmail">—</strong> via the notification service.</p>
+          </div>
+
+          <div class="action-row">
+            <a class="btn-primary" id="createAnother" href="ticket.html">Create another ticket →</a>
+            <a class="btn-ghost btn-inline" id="messageAgentBtn" href="ticket.html">Message support →</a>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="card-panel wide ticket-history" id="ticketHistory" style="display:none;">
+        <h3>Your tickets</h3>
+        <p class="lead" style="margin:0 0 16px;font-size:12.5px;">Click a ticket to view its full details above.</p>
+        <div class="history-list" id="historyList"></div>
+      </div>
+    </div>
+
+  </section>
+
+</div>
+<script src="app.js"></script>
+</body>
+</html>

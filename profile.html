@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Docket — Create profile</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-step="2">
+<div class="scene">
+
+  <div class="topbar">
+    <a class="logo" href="landing.html">Docket.</a>
+    <div class="steps">
+      <span class="step-pill" data-step="0"><span class="num">1</span>Landing</span>
+      <span class="step-pill" data-step="1"><span class="num">2</span>Login</span>
+      <span class="step-pill" data-step="2"><span class="num">3</span>Profile</span>
+      <span class="step-pill" data-step="3"><span class="num">4</span>Ticket</span>
+      <span class="step-pill" data-step="4"><span class="num">5</span>Portal</span>
+    </div>
+    <button class="topbar-cta" type="button" style="visibility:hidden;" aria-hidden="true">Log in</button>
+  </div>
+
+  <section>
+    <div class="card-panel">
+
+      <div id="profileForm">
+        <h2>Create your profile</h2>
+        <p class="lead">We'll use this to fill in your ticket details automatically.</p>
+
+        <div class="field" id="f-name">
+          <label for="fullName">Full name</label>
+          <input type="text" id="fullName" placeholder="e.g. Derrick Agorhom">
+          <div class="err">Enter your full name.</div>
+        </div>
+
+        <div class="field" id="f-email">
+          <label for="email">Email address</label>
+          <input type="email" id="email" placeholder="you@company.com">
+          <div class="err">Enter a valid email address.</div>
+        </div>
+
+        <div class="row2">
+          <div class="field">
+            <label for="phone">Phone <span class="opt">(optional)</span></label>
+            <input type="tel" id="phone" placeholder="+233 00 000 0000">
+          </div>
+          <div class="field">
+            <label for="dept">Department <span class="opt">(optional)</span></label>
+            <input type="text" id="dept" placeholder="e.g. Operations">
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="org">Organization <span class="opt">(optional)</span></label>
+          <input type="text" id="org" placeholder="Company or team name">
+        </div>
+
+        <button class="btn-amber" id="submitProfile" type="button">Create profile</button>
+      </div>
+
+      <div class="stub" id="stub">
+        <p class="eyebrow" style="margin-bottom:8px;">Profile created</p>
+        <h2 style="margin-bottom:6px;">Welcome in<span id="stubName"></span></h2>
+        <div class="id-chip"><span>🎫</span><span id="stubId">USR-2026-000000</span></div>
+        <div class="perf"></div>
+        <p class="lead" style="margin:0 0 24px;">Your details are saved.</p>
+        <a class="btn-amber" style="display:block;text-align:center;text-decoration:none;box-sizing:border-box;" href="ticket.html">Create a ticket →</a>
+      </div>
+
+    </div>
+  </section>
+
+</div>
+<script src="app.js"></script>
+</body>
+</html>
