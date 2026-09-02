@@ -316,6 +316,23 @@ h1.display{
 .csat-done p{margin:0;font-size:13px;color:var(--muted);}
 .csat-done strong{color:var(--ink);}
 
+/* ---- Inline agent action panels (reassign / escalate) ---- */
+.inline-panel{
+  background:var(--white);border:1px solid var(--line);border-radius:14px;
+  padding:18px 20px;margin-bottom:22px;
+}
+.inline-panel .prompt{margin:0 0 14px;font-size:14.5px;font-weight:600;color:var(--ink);}
+.inline-panel .field{margin-bottom:14px;}
+.inline-panel .field select,.inline-panel .field textarea{
+  width:100%;font-family:'Inter',sans-serif;font-size:14px;padding:12px 14px;
+  border:1px solid var(--line);border-radius:10px;background:var(--paper-alt);color:var(--ink);
+  box-sizing:border-box;
+}
+.inline-panel .field select:focus,.inline-panel .field textarea:focus{outline:2px solid var(--amber-2);outline-offset:1px;border-color:transparent;}
+.inline-panel .field textarea{resize:vertical;min-height:64px;}
+.inline-panel .panel-actions{display:flex;gap:10px;flex-wrap:wrap;}
+.inline-panel .panel-actions .btn-amber.btn-inline,.inline-panel .panel-actions .btn-ghost.btn-inline{margin-top:0;}
+
 /* ---- Portal layout: profile sidebar + main column ---- */
 .portal-grid{
   display:grid;

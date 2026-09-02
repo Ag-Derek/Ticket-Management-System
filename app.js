@@ -567,7 +567,13 @@ document.addEventListener('DOMContentLoaded', function () {
         btn.type = 'button';
         btn.className = 'btn-ghost btn-inline';
         btn.textContent = m.label;
-        btn.addEventListener('click', function () { changeStatus(t, m.to); });
+        // Escalating needs a target + reason first, so open that panel instead
+        // of transitioning straight away like every other status move does.
+        if (m.to === 'Escalated') {
+          btn.addEventListener('click', function () { openEscalatePanel(t); });
+        } else {
+          btn.addEventListener('click', function () { changeStatus(t, m.to); });
+        }
         wrap.appendChild(btn);
       });
       if (!moves.length) {
@@ -577,6 +583,102 @@ document.addEventListener('DOMContentLoaded', function () {
         if (note.textContent) wrap.appendChild(note);
       }
     }
+
+    // ---- Reassign / escalate ----
+    // Mock roster since there's no real agent directory to look up against.
+    var AGENT_ROSTER = ['Maya Owusu', 'Kwame Boateng', 'Ama Serwaa', 'Yaw Mensah', 'Efia Asante'];
+    var ESCALATION_TARGETS = ['Tier 2 Support', 'Team Lead', 'Engineering', 'Network Operations Center'];
+
+    function formatNoteTime(d) {
+      var h = d.getHours(); var m = d.getMinutes();
+      var ampm = h >= 12 ? 'PM' : 'AM';
+      h = h % 12; if (h === 0) h = 12;
+      return h + ':' + (m < 10 ? '0' : '') + m + ' ' + ampm;
+    }
+
+    // Drops an internal-only note into the ticket's existing chat thread, so
+    // reassignments and escalations leave the same kind of trail agents already
+    // see for internal comments — no separate history UI needed.
+    function addInternalNote(ticketId, text) {
+      var chatKey = 'docketChat:' + ticketId;
+      var msgs = [];
+      try { msgs = JSON.parse(localStorage.getItem(chatKey)) || []; } catch (e) { msgs = []; }
+      msgs.push({ from: 'agent', name: agent.name, text: text, time: formatNoteTime(new Date()), visibility: 'internal' });
+      localStorage.setItem(chatKey, JSON.stringify(msgs));
+    }
+
+    var reassignPanel = document.getElementById('reassignPanel');
+    var reassignSelect = document.getElementById('reassignSelect');
+    var reassignNote = document.getElementById('reassignNote');
+    var escalatePanel = document.getElementById('escalatePanel');
+    var escalateSelect = document.getElementById('escalateSelect');
+    var escalateReason = document.getElementById('escalateReason');
+
+    function closePanels() {
+      reassignPanel.style.display = 'none';
+      escalatePanel.style.display = 'none';
+    }
+
+    function openReassignPanel(t) {
+      escalatePanel.style.display = 'none';
+      reassignSelect.innerHTML = '';
+      AGENT_ROSTER.filter(function (name) { return name !== agent.name; }).forEach(function (name) {
+        var opt = document.createElement('option');
+        opt.value = name; opt.textContent = name;
+        reassignSelect.appendChild(opt);
+      });
+      reassignNote.value = '';
+      reassignPanel.style.display = 'block';
+    }
+
+    function openEscalatePanel(t) {
+      reassignPanel.style.display = 'none';
+      escalateSelect.innerHTML = '';
+      ESCALATION_TARGETS.forEach(function (name) {
+        var opt = document.createElement('option');
+        opt.value = name; opt.textContent = name;
+        escalateSelect.appendChild(opt);
+      });
+      escalateReason.value = '';
+      escalatePanel.style.display = 'block';
+    }
+
+    document.getElementById('reassignBtn').addEventListener('click', function () {
+      var t = tickets.filter(function (x) { return x.id === selectedId; })[0];
+      if (!t) return;
+      if (reassignPanel.style.display === 'block') { closePanels(); return; }
+      openReassignPanel(t);
+    });
+    document.getElementById('reassignCancelBtn').addEventListener('click', closePanels);
+    document.getElementById('reassignConfirmBtn').addEventListener('click', function () {
+      var t = tickets.filter(function (x) { return x.id === selectedId; })[0];
+      if (!t) return;
+      var to = reassignSelect.value;
+      if (!to) return;
+      var from = t.assignedAgent || 'Unassigned';
+      t.assignedAgent = to;
+      persistTickets();
+      var note = reassignNote.value.trim();
+      addInternalNote(t.id, 'Reassigned from ' + from + ' to ' + to + (note ? ' — ' + note : '.'));
+      closePanels();
+      renderStats(); renderDetail(); renderList();
+    });
+
+    document.getElementById('escalateCancelBtn').addEventListener('click', closePanels);
+    document.getElementById('escalateConfirmBtn').addEventListener('click', function () {
+      var t = tickets.filter(function (x) { return x.id === selectedId; })[0];
+      if (!t) return;
+      var to = escalateSelect.value;
+      var reason = escalateReason.value.trim();
+      if (!to || !reason) return;
+      if (!canTransition(t.status, 'Escalated')) { closePanels(); return; }
+      t.status = 'Escalated';
+      t.escalation = { to: to, reason: reason, by: agent.name, at: new Date().toISOString() };
+      persistTickets();
+      addInternalNote(t.id, 'Escalated to ' + to + ' — ' + reason);
+      closePanels();
+      renderStats(); renderDetail(); renderList();
+    });
 
     function renderStats() {
       var open = tickets.filter(function (t) { return isOpenStatus(t.status); }).length;
@@ -601,6 +703,7 @@ document.addEventListener('DOMContentLoaded', function () {
         return;
       }
       dash.style.display = 'block';
+      closePanels();
 
       document.getElementById('dashId').textContent = t.id;
       document.getElementById('dashSubject').textContent = t.subject;
@@ -619,6 +722,8 @@ document.addEventListener('DOMContentLoaded', function () {
       var assignBtn = document.getElementById('assignToMeBtn');
       assignBtn.disabled = t.assignedAgent === agent.name;
       assignBtn.textContent = t.assignedAgent === agent.name ? 'Assigned to you' : 'Assign to me';
+      var reassignBtn = document.getElementById('reassignBtn');
+      reassignBtn.disabled = !t.assignedAgent || t.status === 'Closed';
       renderStatusActions(t);
       document.getElementById('messageCustomerBtn').setAttribute('href', 'ticket-chat.html?ticket=' + encodeURIComponent(t.id) + '&role=agent');
 
@@ -634,6 +739,18 @@ document.addEventListener('DOMContentLoaded', function () {
           resText.innerHTML = 'Customer <strong>reopened this ticket</strong> — take another look.';
         } else {
           resBanner.style.display = 'none';
+        }
+      }
+
+      // Flag when the ticket is currently escalated and why.
+      var escBanner = document.getElementById('dashEscalationBanner');
+      var escText = document.getElementById('dashEscalationText');
+      if (escBanner && escText) {
+        if (t.status === 'Escalated' && t.escalation) {
+          escBanner.style.display = 'flex';
+          escText.innerHTML = 'Escalated to <strong>' + t.escalation.to + '</strong> by ' + t.escalation.by + ': "' + t.escalation.reason + '"';
+        } else {
+          escBanner.style.display = 'none';
         }
       }
 

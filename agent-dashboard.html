@@ -87,6 +87,11 @@
             <p id="dashResolutionText"></p>
           </div>
 
+          <div class="notify-banner" id="dashEscalationBanner" style="display:none;">
+            <div class="ic">▲</div>
+            <p id="dashEscalationText"></p>
+          </div>
+
           <div class="csat-done" id="dashCsatBanner" style="display:none;">
             <div class="csat-stars csat-stars-readonly" id="dashCsatStars"></div>
             <p id="dashCsatText"></p>
@@ -94,8 +99,41 @@
 
           <div class="action-row">
             <button class="btn-amber btn-inline" id="assignToMeBtn" type="button">Assign to me</button>
+            <button class="btn-ghost btn-inline" id="reassignBtn" type="button">Reassign…</button>
             <div class="action-row" id="statusActions" style="margin:0;"></div>
             <a class="btn-ghost btn-inline" id="messageCustomerBtn" href="#">Message customer →</a>
+          </div>
+
+          <div class="inline-panel" id="reassignPanel" style="display:none;">
+            <p class="prompt">Hand this ticket to another agent</p>
+            <div class="field">
+              <label for="reassignSelect">Agent</label>
+              <select id="reassignSelect"></select>
+            </div>
+            <div class="field" style="margin-bottom:0;">
+              <label for="reassignNote">Note <span class="opt">(optional)</span></label>
+              <textarea id="reassignNote" placeholder="Why you're handing this off…" style="margin-bottom:14px;"></textarea>
+            </div>
+            <div class="panel-actions">
+              <button class="btn-amber btn-inline" id="reassignConfirmBtn" type="button">Confirm reassign</button>
+              <button class="btn-ghost btn-inline" id="reassignCancelBtn" type="button">Cancel</button>
+            </div>
+          </div>
+
+          <div class="inline-panel" id="escalatePanel" style="display:none;">
+            <p class="prompt">Flag this ticket up</p>
+            <div class="field">
+              <label for="escalateSelect">Escalate to</label>
+              <select id="escalateSelect"></select>
+            </div>
+            <div class="field" style="margin-bottom:0;">
+              <label for="escalateReason">Reason</label>
+              <textarea id="escalateReason" placeholder="What's blocking this or why it needs to go up…" style="margin-bottom:14px;"></textarea>
+            </div>
+            <div class="panel-actions">
+              <button class="btn-amber btn-inline" id="escalateConfirmBtn" type="button">Confirm escalate</button>
+              <button class="btn-ghost btn-inline" id="escalateCancelBtn" type="button">Cancel</button>
+            </div>
           </div>
         </div>
       </div>
