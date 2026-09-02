@@ -101,6 +101,62 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   }
 
+  // ---- Admin sign-in (admin-login.html): single seeded super account, validation + confirmation stub ----
+  var adminLoginForm = document.getElementById('adminLoginForm');
+  if (adminLoginForm) {
+    // Unlike agent sign-in (any credentials work), the admin console is a single
+    // seeded super account — only this exact email/password combination signs in.
+    var SEED_ADMIN = {
+      email: 'admin@docket.com',
+      password: 'Admin2026!',
+      name: 'System Administrator',
+      id: 'ADM-2026-000001'
+    };
+
+    document.getElementById('submitAdminLogin').addEventListener('click', function () {
+      var email = document.getElementById('adminEmail');
+      var password = document.getElementById('adminPassword');
+      var emailField = document.getElementById('f-adminEmail');
+      var passwordField = document.getElementById('f-adminPassword');
+      var emailErr = document.getElementById('err-adminEmail');
+      var passwordErr = document.getElementById('err-adminPassword');
+
+      // Reset to the default "required" messaging before re-checking
+      emailErr.textContent = 'Enter your admin email address.';
+      passwordErr.textContent = 'Enter your password.';
+
+      var valid = true;
+      if (!email.value.trim()) { emailField.classList.add('invalid'); valid = false; }
+      else { emailField.classList.remove('invalid'); }
+
+      if (!password.value.trim()) { passwordField.classList.add('invalid'); valid = false; }
+      else { passwordField.classList.remove('invalid'); }
+
+      if (!valid) return;
+
+      var matches = email.value.trim().toLowerCase() === SEED_ADMIN.email && password.value === SEED_ADMIN.password;
+      if (!matches) {
+        emailField.classList.add('invalid');
+        passwordField.classList.add('invalid');
+        emailErr.textContent = 'Incorrect email or password.';
+        passwordErr.textContent = 'Incorrect email or password.';
+        return;
+      }
+
+      document.getElementById('adminStubId').textContent = SEED_ADMIN.id;
+      document.getElementById('adminStubName').textContent = ', ' + SEED_ADMIN.name.split(' ')[0];
+      adminLoginForm.style.display = 'none';
+      document.getElementById('adminStub').classList.add('show');
+
+      localStorage.setItem('docketAdmin', JSON.stringify({
+        id: SEED_ADMIN.id,
+        name: SEED_ADMIN.name,
+        email: SEED_ADMIN.email,
+        keepSignedIn: document.getElementById('adminKeepSignedIn').checked
+      }));
+    });
+  }
+
   // ---- Ticket creation (ticket.html): form + submitting animation, then hands off to portal.html ----
   var ticketForm = document.getElementById('ticketForm');
   if (ticketForm) {
@@ -222,13 +278,6 @@ document.addEventListener('DOMContentLoaded', function () {
       var latestMatch = all.filter(function (t) { return t.id === latest.id; })[0];
       if (latestMatch) latest = latestMatch;
     }
-
-    // Snapshot of each ticket's status as this tab currently knows it, so a
-    // change made elsewhere (an agent updating status on their dashboard, or
-    // this same customer with the portal open in a second tab) can be told
-    // apart from a status this tab already displayed.
-    var knownStatuses = {};
-    all.forEach(function (t) { knownStatuses[t.id] = t.status; });
 
     function portalStatusClass(status) {
       if (status === 'Resolved') return 'status-resolved';
@@ -459,97 +508,6 @@ document.addEventListener('DOMContentLoaded', function () {
         if (activeRow) activeRow.classList.add('active');
       }
     }
-
-    // ---- FR-4: live notifications on status change ----
-    // Status changes happen on the agent dashboard (a different tab/window),
-    // so this tab needs to notice the shared localStorage record changing
-    // and refresh in place instead of requiring the customer to reload.
-
-    function showStatusToast(ticket, fromStatus, toStatus) {
-      var wrap = document.getElementById('statusToastWrap');
-      if (!wrap) return;
-      var toast = document.createElement('div');
-      toast.className = 'status-toast';
-      toast.innerHTML =
-        '<div class="ic">✓</div>' +
-        '<div class="toast-body">' +
-          '<p class="toast-title">' + ticket.id + '</p>' +
-          '<p class="toast-sub">' + (ticket.subject ? ticket.subject + ' — ' : '') +
-            'now <strong>' + toStatus + '</strong> (was ' + (fromStatus || 'Created') + ')</p>' +
-        '</div>' +
-        '<button type="button" class="toast-close" aria-label="Dismiss notification">✕</button>';
-      wrap.appendChild(toast);
-
-      function dismiss() {
-        toast.classList.add('leaving');
-        setTimeout(function () { toast.remove(); }, 280);
-      }
-      toast.querySelector('.toast-close').addEventListener('click', dismiss);
-      setTimeout(dismiss, 6000);
-    }
-
-    function pulseStatusBadge() {
-      var badge = document.getElementById('dashStatusBadge');
-      if (!badge) return;
-      badge.classList.remove('pulse');
-      void badge.offsetWidth; // restart the animation if it's already mid-pulse
-      badge.classList.add('pulse');
-    }
-
-    // Parses the latest `docketTickets` value, diffs it against what this tab
-    // last knew, refreshes the dashboard/history in place, and toasts every
-    // ticket whose status actually moved.
-    function applyRemoteTicketUpdate(raw) {
-      if (!raw) return;
-      var updated;
-      try { updated = JSON.parse(raw) || []; } catch (err) { return; }
-      updated.forEach(function (t) {
-        if (!t.status) t.status = 'Created';
-        if (t.assignedAgent === undefined) t.assignedAgent = null;
-      });
-
-      var changedList = [];
-      updated.forEach(function (t) {
-        var prevStatus = knownStatuses[t.id];
-        if (prevStatus !== undefined && prevStatus !== t.status) {
-          changedList.push({ ticket: t, from: prevStatus, to: t.status });
-        }
-        knownStatuses[t.id] = t.status;
-      });
-
-      if (!changedList.length) return;
-
-      all = updated;
-      if (latest) {
-        var freshLatest = all.filter(function (x) { return x.id === latest.id; })[0];
-        if (freshLatest) latest = freshLatest;
-      }
-      // Re-showing the currently open ticket also re-syncs every history row's
-      // status pill/class against the fresh `all` array (see showTicketDetails).
-      if (currentTicketId) {
-        var openTicket = all.filter(function (x) { return x.id === currentTicketId; })[0];
-        if (openTicket) showTicketDetails(openTicket);
-      }
-
-      changedList.forEach(function (c) {
-        showStatusToast(c.ticket, c.from, c.to);
-        if (c.ticket.id === currentTicketId) pulseStatusBadge();
-      });
-    }
-
-    // `storage` only fires in *other* tabs/windows of this origin — exactly
-    // what's needed here, since it means this tab's own writes (confirm fix,
-    // reopen, CSAT) never re-trigger a toast about themselves.
-    window.addEventListener('storage', function (e) {
-      if (e.key === 'docketTickets') applyRemoteTicketUpdate(e.newValue);
-    });
-
-    // Light polling fallback in case the storage event doesn't reach this tab
-    // (some embedded/preview contexts don't relay it) — harmless either way,
-    // since applyRemoteTicketUpdate is a no-op once knownStatuses is caught up.
-    setInterval(function () {
-      applyRemoteTicketUpdate(localStorage.getItem('docketTickets'));
-    }, 4000);
   }
 
   // ---- Agent queue (agent-dashboard.html): stats + filterable list + ticket actions ----

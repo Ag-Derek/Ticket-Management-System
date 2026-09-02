@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Docket — Admin sign-in</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-app="admin">
+<div class="scene">
+
+  <div class="topbar">
+    <a class="logo" href="landing.html">Docket.</a>
+    <span class="console-badge admin-badge"><span class="dot"></span>Admin Console</span>
+    <a class="console-link" href="agent-login.html">Agent console ↗</a>
+  </div>
+
+  <section>
+    <div class="card-panel agent-card admin-card">
+
+      <div id="adminLoginForm">
+        <div class="login-mark admin-mark">⬡</div>
+        <span class="role-chip admin-role-chip">Super admin</span>
+        <h2>Sign in to the admin console</h2>
+        <p class="lead">Monitor every ticket, assign or reassign work across all agents, and manage agent accounts.</p>
+
+        <div class="field" id="f-adminEmail">
+          <label for="adminEmail">Admin email</label>
+          <input type="email" id="adminEmail" placeholder="admin@docket.com" autocomplete="username">
+          <div class="err" id="err-adminEmail">Enter your admin email address.</div>
+        </div>
+
+        <div class="field" id="f-adminPassword">
+          <label for="adminPassword">Password</label>
+          <input type="password" id="adminPassword" placeholder="••••••••" autocomplete="current-password">
+          <div class="err" id="err-adminPassword">Enter your password.</div>
+        </div>
+
+        <div class="field-link-row">
+          <a href="#" tabindex="-1">Forgot password?</a>
+        </div>
+
+        <div class="checkbox-row">
+          <input type="checkbox" id="adminKeepSignedIn">
+          <label for="adminKeepSignedIn">Keep me signed in on this device</label>
+        </div>
+
+        <button class="btn-amber" id="submitAdminLogin" type="button">Sign in</button>
+
+        <div class="note">This is a single seeded super account, unlike agent sign-in which accepts any credentials. Demo credential: <strong>admin@docket.com</strong> / <strong>Admin2026!</strong> — Entra ID will replace this in a later phase.</div>
+      </div>
+
+      <div class="stub agent-stub" id="adminStub">
+        <p class="eyebrow" style="margin-bottom:8px;">Signed in</p>
+        <h2 style="margin-bottom:6px;">Welcome back<span id="adminStubName"></span></h2>
+        <div class="id-chip"><span>⬡</span><span id="adminStubId">ADM-2026-000001</span></div>
+        <div class="perf"></div>
+        <p class="lead" style="margin:0 0 24px;">The admin dashboard is next up — this button is a placeholder until it's built.</p>
+        <a class="btn-amber" style="display:block;text-align:center;text-decoration:none;box-sizing:border-box;" href="admin-dashboard.html">Go to dashboard →</a>
+      </div>
+
+    </div>
+  </section>
+
+</div>
+<script src="app.js"></script>
+</body>
+</html>
