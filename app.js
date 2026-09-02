@@ -225,8 +225,22 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function portalStatusClass(status) {
       if (status === 'Resolved') return 'status-resolved';
+      if (status === 'Closed') return 'status-closed';
+      if (status === 'Reopened') return 'status-reopened';
       if (status === 'In Progress') return 'status-progress';
       return '';
+    }
+
+    // Writes a status change back to the shared ticket store (docketTickets + docketLatestTicket)
+    // and keeps this page's in-memory copies (`all`, `latest`) in sync.
+    function persistPortalTicket(t) {
+      var idx = all.findIndex(function (x) { return x.id === t.id; });
+      if (idx !== -1) all[idx] = t;
+      localStorage.setItem('docketTickets', JSON.stringify(all));
+      if (latest && latest.id === t.id) {
+        latest = t;
+        localStorage.setItem('docketLatestTicket', JSON.stringify(t));
+      }
     }
 
     // Profile sidebar
@@ -245,7 +259,9 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     // Loads a ticket's full details into the dashboard card and highlights its row
+    var currentTicketId = null;
     function showTicketDetails(t) {
+      currentTicketId = t.id;
       document.getElementById('dashId').textContent = t.id;
       document.getElementById('dashSubject').textContent = t.subject;
       document.getElementById('dashCategory').textContent = t.category;
@@ -263,8 +279,54 @@ document.addEventListener('DOMContentLoaded', function () {
       var messageAgentBtn = document.getElementById('messageAgentBtn');
       if (messageAgentBtn) messageAgentBtn.setAttribute('href', 'ticket-chat.html?ticket=' + encodeURIComponent(t.id) + '&role=customer');
 
+      // Confirm fix / reopen only apply while a ticket is sitting in "Resolved",
+      // waiting on the customer to say whether the fix actually worked.
+      var resolutionRow = document.getElementById('resolutionRow');
+      var notifyBanner = document.getElementById('dashNotifyBanner');
+      if (resolutionRow) {
+        resolutionRow.style.display = t.status === 'Resolved' ? 'flex' : 'none';
+      }
+      if (notifyBanner) {
+        var bannerText = notifyBanner.querySelector('p');
+        if (t.status === 'Closed') {
+          bannerText.innerHTML = 'You confirmed the fix for <strong id="dashEmail">' + t.email + '</strong> — this ticket is closed.';
+        } else if (t.status === 'Reopened') {
+          bannerText.innerHTML = 'You reopened this ticket — <strong id="dashEmail">' + t.email + '</strong> has been notified.';
+        } else {
+          bannerText.innerHTML = 'Confirmation sent to <strong id="dashEmail">' + t.email + '</strong> via the notification service.';
+        }
+      }
+
+      // Re-sync every row's status pill/class against `all`, since confirming or
+      // reopening this ticket updates its status without a full re-render.
       document.querySelectorAll('.history-row').forEach(function (r) {
-        r.classList.toggle('active', r.dataset.ticketId === t.id);
+        var match = all.filter(function (x) { return x.id === r.dataset.ticketId; })[0];
+        if (!match) return;
+        r.className = 'history-row ' + portalStatusClass(match.status) + (r.dataset.ticketId === t.id ? ' active' : '');
+        var statusEl = r.querySelector('.history-status');
+        if (statusEl) statusEl.textContent = match.status;
+      });
+    }
+
+    var confirmFixBtn = document.getElementById('confirmFixBtn');
+    if (confirmFixBtn) {
+      confirmFixBtn.addEventListener('click', function () {
+        var t = all.filter(function (x) { return x.id === currentTicketId; })[0];
+        if (!t) return;
+        t.status = 'Closed';
+        persistPortalTicket(t);
+        showTicketDetails(t);
+      });
+    }
+
+    var reopenBtn = document.getElementById('reopenBtn');
+    if (reopenBtn) {
+      reopenBtn.addEventListener('click', function () {
+        var t = all.filter(function (x) { return x.id === currentTicketId; })[0];
+        if (!t) return;
+        t.status = 'Reopened';
+        persistPortalTicket(t);
+        showTicketDetails(t);
       });
     }
 
@@ -362,15 +424,21 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function statusClass(status) {
       if (status === 'Resolved') return 'status-resolved';
+      if (status === 'Closed') return 'status-closed';
+      if (status === 'Reopened') return 'status-reopened';
       if (status === 'In Progress') return 'status-progress';
       return '';
     }
 
+    // Closed tickets are done, same as Resolved, for queue-health purposes.
+    // Reopened tickets are back in the open pile until an agent resolves them again.
+    function isOpenStatus(status) { return status !== 'Resolved' && status !== 'Closed'; }
+
     function renderStats() {
-      var open = tickets.filter(function (t) { return t.status !== 'Resolved'; }).length;
-      var critical = tickets.filter(function (t) { return t.priority === 'Critical' && t.status !== 'Resolved'; }).length;
-      var unassigned = tickets.filter(function (t) { return !t.assignedAgent && t.status !== 'Resolved'; }).length;
-      var resolved = tickets.filter(function (t) { return t.status === 'Resolved'; }).length;
+      var open = tickets.filter(function (t) { return isOpenStatus(t.status); }).length;
+      var critical = tickets.filter(function (t) { return t.priority === 'Critical' && isOpenStatus(t.status); }).length;
+      var unassigned = tickets.filter(function (t) { return !t.assignedAgent && isOpenStatus(t.status); }).length;
+      var resolved = tickets.filter(function (t) { return t.status === 'Resolved' || t.status === 'Closed'; }).length;
       var mine = tickets.filter(function (t) { return t.assignedAgent === agent.name; }).length;
 
       document.getElementById('statOpen').textContent = open;
@@ -408,9 +476,24 @@ document.addEventListener('DOMContentLoaded', function () {
       var resolveBtn = document.getElementById('resolveBtn');
       assignBtn.disabled = t.assignedAgent === agent.name;
       assignBtn.textContent = t.assignedAgent === agent.name ? 'Assigned to you' : 'Assign to me';
-      resolveBtn.disabled = t.status === 'Resolved';
-      resolveBtn.textContent = t.status === 'Resolved' ? 'Resolved' : 'Mark resolved';
+      resolveBtn.disabled = t.status === 'Resolved' || t.status === 'Closed';
+      resolveBtn.textContent = t.status === 'Closed' ? 'Closed' : (t.status === 'Resolved' ? 'Awaiting customer' : 'Mark resolved');
       document.getElementById('messageCustomerBtn').setAttribute('href', 'ticket-chat.html?ticket=' + encodeURIComponent(t.id) + '&role=agent');
+
+      // Surface whether the customer has confirmed the fix or reopened the ticket.
+      var resBanner = document.getElementById('dashResolutionBanner');
+      var resText = document.getElementById('dashResolutionText');
+      if (resBanner && resText) {
+        if (t.status === 'Closed') {
+          resBanner.style.display = 'flex';
+          resText.innerHTML = 'Customer <strong>confirmed the fix</strong> — ticket closed.';
+        } else if (t.status === 'Reopened') {
+          resBanner.style.display = 'flex';
+          resText.innerHTML = 'Customer <strong>reopened this ticket</strong> — take another look.';
+        } else {
+          resBanner.style.display = 'none';
+        }
+      }
     }
 
     function renderList() {

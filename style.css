@@ -403,10 +403,14 @@ h1.display{
 .btn-ghost:disabled:hover{background:transparent;color:var(--ink);}
 .status-badge.status-progress{background:var(--paper-alt);color:var(--ink);border:1px solid var(--line);}
 .status-badge.status-resolved{background:var(--ink);color:#fff;}
+.status-badge.status-closed{background:var(--ink);color:#fff;}
+.status-badge.status-reopened{background:#fff;color:#B14A1F;border:1px solid #B14A1F;}
 .history-row .history-status{
   font-size:11px;font-weight:600;letter-spacing:.03em;text-transform:uppercase;color:var(--muted);
 }
 .history-row.status-resolved{opacity:.6;}
+.history-row.status-closed{opacity:.6;}
+.history-row.status-reopened{border-color:#B14A1F;}
 .history-row .history-unassigned{color:#B14A1F;}
 .queue-empty{text-align:center;padding:20px 0;}
 

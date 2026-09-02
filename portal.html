@@ -74,9 +74,14 @@
             <div class="meta-box"><p class="k">Assigned agent</p><p class="v" id="dashAgent">—</p></div>
           </div>
 
-          <div class="notify-banner">
+          <div class="notify-banner" id="dashNotifyBanner">
             <div class="ic">✉</div>
             <p>Confirmation sent to <strong id="dashEmail">—</strong> via the notification service.</p>
+          </div>
+
+          <div class="action-row" id="resolutionRow" style="display:none;">
+            <button class="btn-amber btn-inline" id="confirmFixBtn" type="button">Confirm fix ✓</button>
+            <button class="btn-ghost btn-inline" id="reopenBtn" type="button">Reopen ticket</button>
           </div>
 
           <div class="action-row">
