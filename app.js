@@ -228,6 +228,8 @@ document.addEventListener('DOMContentLoaded', function () {
       if (status === 'Closed') return 'status-closed';
       if (status === 'Reopened') return 'status-reopened';
       if (status === 'In Progress') return 'status-progress';
+      if (status === 'Waiting') return 'status-waiting';
+      if (status === 'Escalated') return 'status-escalated';
       return '';
     }
 
@@ -504,12 +506,77 @@ document.addEventListener('DOMContentLoaded', function () {
       if (status === 'Closed') return 'status-closed';
       if (status === 'Reopened') return 'status-reopened';
       if (status === 'In Progress') return 'status-progress';
+      if (status === 'Waiting') return 'status-waiting';
+      if (status === 'Escalated') return 'status-escalated';
       return '';
     }
 
     // Closed tickets are done, same as Resolved, for queue-health purposes.
     // Reopened tickets are back in the open pile until an agent resolves them again.
     function isOpenStatus(status) { return status !== 'Resolved' && status !== 'Closed'; }
+
+    // ---- Ticket status state machine ----
+    // Each key is a status an agent can act on; the value lists every status
+    // it's allowed to move to next, with the button label to show for that move.
+    // Anything not listed here (e.g. from Resolved/Closed) has no agent-facing
+    // action — those only change via the customer's confirm/reopen on the portal.
+    var STATUS_TRANSITIONS = {
+      // No entry for 'Created': a ticket must be assigned to an agent (via
+      // "Assign to me") before any status action becomes available.
+      'Assigned': [
+        { to: 'In Progress', label: 'Start progress' }
+      ],
+      'In Progress': [
+        { to: 'Waiting', label: 'Mark waiting on customer' },
+        { to: 'Escalated', label: 'Escalate' },
+        { to: 'Resolved', label: 'Mark resolved' }
+      ],
+      'Waiting': [
+        { to: 'In Progress', label: 'Resume progress' }
+      ],
+      'Escalated': [
+        { to: 'In Progress', label: 'Resume progress' }
+      ],
+      'Reopened': [
+        { to: 'In Progress', label: 'Resume progress' }
+      ]
+    };
+
+    // True only if `to` is one of the moves STATUS_TRANSITIONS allows from `from`.
+    // This is the single gate everything else in the agent view goes through, so
+    // there's no path in the UI that can set a status out of sequence.
+    function canTransition(from, to) {
+      var moves = STATUS_TRANSITIONS[from] || [];
+      return moves.some(function (m) { return m.to === to; });
+    }
+
+    function changeStatus(t, toStatus) {
+      if (!canTransition(t.status, toStatus)) return false;
+      t.status = toStatus;
+      persistTickets();
+      renderStats(); renderDetail(); renderList();
+      return true;
+    }
+
+    function renderStatusActions(t) {
+      var wrap = document.getElementById('statusActions');
+      wrap.innerHTML = '';
+      var moves = STATUS_TRANSITIONS[t.status] || [];
+      moves.forEach(function (m) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn-ghost btn-inline';
+        btn.textContent = m.label;
+        btn.addEventListener('click', function () { changeStatus(t, m.to); });
+        wrap.appendChild(btn);
+      });
+      if (!moves.length) {
+        var note = document.createElement('span');
+        note.className = 'history-status';
+        note.textContent = t.status === 'Resolved' ? 'Awaiting customer' : (t.status === 'Closed' ? 'Closed' : '');
+        if (note.textContent) wrap.appendChild(note);
+      }
+    }
 
     function renderStats() {
       var open = tickets.filter(function (t) { return isOpenStatus(t.status); }).length;
@@ -550,11 +617,9 @@ document.addEventListener('DOMContentLoaded', function () {
       badge.className = 'status-badge ' + statusClass(t.status);
 
       var assignBtn = document.getElementById('assignToMeBtn');
-      var resolveBtn = document.getElementById('resolveBtn');
       assignBtn.disabled = t.assignedAgent === agent.name;
       assignBtn.textContent = t.assignedAgent === agent.name ? 'Assigned to you' : 'Assign to me';
-      resolveBtn.disabled = t.status === 'Resolved' || t.status === 'Closed';
-      resolveBtn.textContent = t.status === 'Closed' ? 'Closed' : (t.status === 'Resolved' ? 'Awaiting customer' : 'Mark resolved');
+      renderStatusActions(t);
       document.getElementById('messageCustomerBtn').setAttribute('href', 'ticket-chat.html?ticket=' + encodeURIComponent(t.id) + '&role=agent');
 
       // Surface whether the customer has confirmed the fix or reopened the ticket.
@@ -634,14 +699,6 @@ document.addEventListener('DOMContentLoaded', function () {
       if (!t) return;
       t.assignedAgent = agent.name;
       if (t.status === 'Created') t.status = 'Assigned';
-      persistTickets();
-      renderStats(); renderDetail(); renderList();
-    });
-
-    document.getElementById('resolveBtn').addEventListener('click', function () {
-      var t = tickets.filter(function (x) { return x.id === selectedId; })[0];
-      if (!t) return;
-      t.status = 'Resolved';
       persistTickets();
       renderStats(); renderDetail(); renderList();
     });
