@@ -267,6 +267,12 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     var teams = ['Network Support', 'Application Support', 'Infrastructure', 'Access & Identity'];
+    var teamByCategory = {
+      'Network': 'Network Support',
+      'Application': 'Application Support',
+      'Hardware': 'Infrastructure',
+      'Access & Identity': 'Access & Identity'
+    };
     var slaByPriority = {
       Critical: { response: '15 min', resolution: '4 hrs' },
       High: { response: '30 min', resolution: '8 hrs' },
@@ -302,7 +308,7 @@ document.addEventListener('DOMContentLoaded', function () {
       });
 
       var ticketId = 'TKT-2026-' + String(Math.floor(Math.random() * 900000) + 100000).slice(0, 6);
-      var team = teams[Math.floor(Math.random() * teams.length)];
+      var team = teamByCategory[category.value] || teams[Math.floor(Math.random() * teams.length)];
       var sla = slaByPriority[priority.value] || slaByPriority.Medium;
 
       setTimeout(function () {
