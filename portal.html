@@ -84,6 +84,26 @@
             <button class="btn-ghost btn-inline" id="reopenBtn" type="button">Reopen ticket</button>
           </div>
 
+          <!-- CSAT: shown once a ticket is Closed and not yet rated -->
+          <div class="csat-panel" id="csatPanel" style="display:none;">
+            <p class="csat-prompt">How did we do resolving this ticket?</p>
+            <div class="csat-stars" id="csatStars">
+              <button type="button" class="csat-star" data-value="1" aria-label="1 star">★</button>
+              <button type="button" class="csat-star" data-value="2" aria-label="2 stars">★</button>
+              <button type="button" class="csat-star" data-value="3" aria-label="3 stars">★</button>
+              <button type="button" class="csat-star" data-value="4" aria-label="4 stars">★</button>
+              <button type="button" class="csat-star" data-value="5" aria-label="5 stars">★</button>
+            </div>
+            <textarea id="csatComment" placeholder="Anything you'd like to add? (optional)"></textarea>
+            <button class="btn-amber btn-inline" id="csatSubmitBtn" type="button" disabled>Submit feedback</button>
+          </div>
+
+          <!-- CSAT: shown once a rating has been submitted for this ticket -->
+          <div class="csat-done" id="csatDone" style="display:none;">
+            <div class="csat-stars csat-stars-readonly" id="csatDoneStars"></div>
+            <p id="csatDoneText">Thanks for the feedback.</p>
+          </div>
+
           <div class="action-row">
             <a class="btn-primary" id="createAnother" href="ticket.html">Create another ticket →</a>
             <a class="btn-ghost btn-inline" id="messageAgentBtn" href="ticket.html">Message support →</a>

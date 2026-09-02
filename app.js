@@ -297,6 +297,25 @@ document.addEventListener('DOMContentLoaded', function () {
         }
       }
 
+      // CSAT: prompt for a rating once a ticket is Closed and unrated; show the
+      // submitted rating (read-only) once one exists.
+      var csatPanel = document.getElementById('csatPanel');
+      var csatDone = document.getElementById('csatDone');
+      if (csatPanel && csatDone) {
+        if (t.status === 'Closed' && !t.csat) {
+          csatPanel.style.display = 'block';
+          csatDone.style.display = 'none';
+          resetCsatForm();
+        } else if (t.status === 'Closed' && t.csat) {
+          csatPanel.style.display = 'none';
+          csatDone.style.display = 'flex';
+          renderCsatDone(t.csat);
+        } else {
+          csatPanel.style.display = 'none';
+          csatDone.style.display = 'none';
+        }
+      }
+
       // Re-sync every row's status pill/class against `all`, since confirming or
       // reopening this ticket updates its status without a full re-render.
       document.querySelectorAll('.history-row').forEach(function (r) {
@@ -325,6 +344,64 @@ document.addEventListener('DOMContentLoaded', function () {
         var t = all.filter(function (x) { return x.id === currentTicketId; })[0];
         if (!t) return;
         t.status = 'Reopened';
+        persistPortalTicket(t);
+        showTicketDetails(t);
+      });
+    }
+
+    // ---- CSAT rating (shown on a Closed ticket until the customer rates it) ----
+    var csatSelected = 0;
+    var csatStarEls = document.querySelectorAll('#csatStars .csat-star');
+    var csatSubmitBtn = document.getElementById('csatSubmitBtn');
+    var csatCommentEl = document.getElementById('csatComment');
+
+    function paintCsatStars(upTo) {
+      csatStarEls.forEach(function (star) {
+        star.classList.toggle('active', Number(star.dataset.value) <= upTo);
+      });
+    }
+
+    function resetCsatForm() {
+      csatSelected = 0;
+      paintCsatStars(0);
+      if (csatSubmitBtn) csatSubmitBtn.disabled = true;
+      if (csatCommentEl) csatCommentEl.value = '';
+    }
+
+    function renderCsatDone(csat) {
+      var doneStars = document.getElementById('csatDoneStars');
+      var doneText = document.getElementById('csatDoneText');
+      if (doneStars) {
+        doneStars.innerHTML = '';
+        for (var i = 1; i <= 5; i++) {
+          var s = document.createElement('span');
+          s.className = 'csat-star' + (i <= csat.score ? ' active' : '');
+          s.textContent = '★';
+          doneStars.appendChild(s);
+        }
+      }
+      if (doneText) {
+        doneText.innerHTML = 'You rated this ticket <strong>' + csat.score + '/5</strong>' +
+          (csat.comment ? ' — thanks for the note!' : ' — thanks for the feedback!');
+      }
+    }
+
+    csatStarEls.forEach(function (star) {
+      star.addEventListener('click', function () {
+        csatSelected = Number(star.dataset.value);
+        paintCsatStars(csatSelected);
+        if (csatSubmitBtn) csatSubmitBtn.disabled = false;
+      });
+      star.addEventListener('mouseenter', function () { paintCsatStars(Number(star.dataset.value)); });
+      star.addEventListener('mouseleave', function () { paintCsatStars(csatSelected); });
+    });
+
+    if (csatSubmitBtn) {
+      csatSubmitBtn.addEventListener('click', function () {
+        if (!csatSelected) return;
+        var t = all.filter(function (x) { return x.id === currentTicketId; })[0];
+        if (!t) return;
+        t.csat = { score: csatSelected, comment: (csatCommentEl ? csatCommentEl.value.trim() : ''), submittedAt: new Date().toISOString() };
         persistPortalTicket(t);
         showTicketDetails(t);
       });
@@ -492,6 +569,26 @@ document.addEventListener('DOMContentLoaded', function () {
           resText.innerHTML = 'Customer <strong>reopened this ticket</strong> — take another look.';
         } else {
           resBanner.style.display = 'none';
+        }
+      }
+
+      // Show the customer's CSAT rating, once they've submitted one.
+      var csatBanner = document.getElementById('dashCsatBanner');
+      if (csatBanner) {
+        if (t.csat) {
+          csatBanner.style.display = 'flex';
+          var csatStars = document.getElementById('dashCsatStars');
+          csatStars.innerHTML = '';
+          for (var i = 1; i <= 5; i++) {
+            var s = document.createElement('span');
+            s.className = 'csat-star' + (i <= t.csat.score ? ' active' : '');
+            s.textContent = '★';
+            csatStars.appendChild(s);
+          }
+          var csatText = document.getElementById('dashCsatText');
+          csatText.textContent = 'Customer rated this ' + t.csat.score + '/5' + (t.csat.comment ? ': "' + t.csat.comment + '"' : '.');
+        } else {
+          csatBanner.style.display = 'none';
         }
       }
     }
