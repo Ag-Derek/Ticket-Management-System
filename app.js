@@ -1207,21 +1207,26 @@ document.addEventListener('DOMContentLoaded', function () {
   if (chatThread) {
     var chatParams = new URLSearchParams(window.location.search);
     var chatTicketId = chatParams.get('ticket');
-    var chatRole = chatParams.get('role') === 'agent' ? 'agent' : 'customer';
+    var chatRoleParam = chatParams.get('role');
+    var chatRole = chatRoleParam === 'agent' ? 'agent' : (chatRoleParam === 'admin' ? 'admin' : 'customer');
 
     var chatActor = null;
     if (chatRole === 'agent') {
       try { chatActor = JSON.parse(localStorage.getItem('docketAgent')); } catch (e) { chatActor = null; }
       if (!chatActor) { window.location.href = 'agent-login.html'; return; }
+    } else if (chatRole === 'admin') {
+      try { chatActor = JSON.parse(localStorage.getItem('docketAdmin')); } catch (e) { chatActor = null; }
+      if (!chatActor) { window.location.href = 'admin-login.html'; return; }
     } else {
       try { chatActor = JSON.parse(localStorage.getItem('docketUser')); } catch (e) { chatActor = null; }
       if (!chatActor) { window.location.href = 'landing.html'; return; }
     }
-    var chatActorName = chatRole === 'agent' ? chatActor.name : chatActor.name.split(' ')[0];
+    var chatActorName = (chatRole === 'agent' || chatRole === 'admin') ? chatActor.name : chatActor.name.split(' ')[0];
 
-    document.getElementById('chatRoleBadge').innerHTML = '<span class="dot"></span>' + (chatRole === 'agent' ? 'Agent Console' : 'Customer Portal');
+    document.getElementById('chatRoleBadge').innerHTML = '<span class="dot"></span>' +
+      (chatRole === 'agent' ? 'Agent Console' : chatRole === 'admin' ? 'Admin Console' : 'Customer Portal');
     document.getElementById('chatBackBtn').addEventListener('click', function () {
-      window.location.href = chatRole === 'agent' ? 'agent-dashboard.html' : 'portal.html';
+      window.location.href = chatRole === 'agent' ? 'agent-dashboard.html' : chatRole === 'admin' ? 'admin-dashboard.html' : 'portal.html';
     });
 
     var chatAllTickets = [];
@@ -1289,7 +1294,7 @@ document.addEventListener('DOMContentLoaded', function () {
       }
     }
 
-    if (chatRole === 'agent' && visToggle) {
+    if ((chatRole === 'agent' || chatRole === 'admin') && visToggle) {
       visToggle.style.display = 'flex';
       visToggle.querySelectorAll('.vis-chip').forEach(function (chip) {
         chip.addEventListener('click', function () {
@@ -1377,7 +1382,7 @@ document.addEventListener('DOMContentLoaded', function () {
         var text = chatInput.value.trim();
         if (!text && !chatFiles.length) return;
         var msgs = loadChatMessages();
-        var visibility = (chatRole === 'agent' && chatVisibility === 'internal') ? 'internal' : 'public';
+        var visibility = ((chatRole === 'agent' || chatRole === 'admin') && chatVisibility === 'internal') ? 'internal' : 'public';
         var msg = { from: chatRole, name: chatActorName, text: text, time: formatChatTime(new Date()), visibility: visibility };
         if (chatFiles.length) msg.files = chatFiles.slice();
         msgs.push(msg);
@@ -1585,7 +1590,7 @@ document.addEventListener('DOMContentLoaded', function () {
         escBanner.style.display = 'none';
       }
 
-      document.getElementById('adminOpenChatBtn').setAttribute('href', 'ticket-chat.html?ticket=' + encodeURIComponent(t.id) + '&role=agent');
+      document.getElementById('adminOpenChatBtn').setAttribute('href', 'ticket-chat.html?ticket=' + encodeURIComponent(t.id) + '&role=admin');
     }
 
     function renderAdminList() {
