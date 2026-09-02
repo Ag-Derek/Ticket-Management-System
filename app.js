@@ -815,6 +815,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function changeStatus(t, toStatus) {
+      if (!isMine(t)) return false;
       if (!canTransition(t.status, toStatus)) return false;
       t.status = toStatus;
       persistTickets();
@@ -822,9 +823,37 @@ document.addEventListener('DOMContentLoaded', function () {
       return true;
     }
 
+    // Only the agent a ticket is currently assigned to may move its status,
+    // escalate it, or resolve it. Everyone else gets a locked notice instead
+    // of live controls — "Assign to me" (or the owner's "Reassign…") is the
+    // only way in.
+    function isMine(t) {
+      return !!t.assignedAgent && t.assignedAgent === agent.name;
+    }
+
+    // Handing a ticket to a specific agent is allowed either as a genuine
+    // reassignment (you currently own it) or as a direct claim-for-someone-
+    // else on a ticket nobody has touched yet — so a teammate's ticket
+    // doesn't have to be "assigned to me" first just to hand it over.
+    function canReassign(t) {
+      if (t.status === 'Closed') return false;
+      return isMine(t) || !t.assignedAgent;
+    }
+
     function renderStatusActions(t) {
       var wrap = document.getElementById('statusActions');
       wrap.innerHTML = '';
+
+      if (!isMine(t)) {
+        var lock = document.createElement('span');
+        lock.className = 'history-status';
+        lock.textContent = t.assignedAgent
+          ? 'Assigned to ' + t.assignedAgent + ' — assign to yourself to act on it'
+          : 'Unassigned — assign to yourself to act on it';
+        wrap.appendChild(lock);
+        return;
+      }
+
       var moves = STATUS_TRANSITIONS[t.status] || [];
       moves.forEach(function (m) {
         var btn = document.createElement('button');
@@ -901,6 +930,8 @@ document.addEventListener('DOMContentLoaded', function () {
         reassignSelect.appendChild(opt);
       });
       reassignNote.value = '';
+      var prompt = document.getElementById('reassignPrompt');
+      if (prompt) prompt.textContent = t.assignedAgent ? 'Hand this ticket to another agent' : 'Assign this unclaimed ticket to an agent';
       reassignPanel.style.display = 'block';
     }
 
@@ -935,14 +966,17 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('reassignCancelBtn').addEventListener('click', closePanels);
     document.getElementById('reassignConfirmBtn').addEventListener('click', function () {
       var t = tickets.filter(function (x) { return x.id === selectedId; })[0];
-      if (!t) return;
+      if (!t || !canReassign(t)) { closePanels(); return; }
       var to = reassignSelect.value;
       if (!to) return;
+      var wasUnassigned = !t.assignedAgent;
       var from = t.assignedAgent || 'Unassigned';
       t.assignedAgent = to;
+      if (wasUnassigned && t.status === 'Created') t.status = 'Assigned';
       persistTickets();
       var note = reassignNote.value.trim();
-      addInternalNote(t.id, 'Reassigned from ' + from + ' to ' + to + (note ? ' — ' + note : '.'));
+      var noteText = wasUnassigned ? 'Assigned to ' + to : 'Reassigned from ' + from + ' to ' + to;
+      addInternalNote(t.id, noteText + (note ? ' — ' + note : '.'));
       closePanels();
       renderStats(); renderDetail(); renderList();
     });
@@ -950,7 +984,7 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('escalateCancelBtn').addEventListener('click', closePanels);
     document.getElementById('escalateConfirmBtn').addEventListener('click', function () {
       var t = tickets.filter(function (x) { return x.id === selectedId; })[0];
-      if (!t) return;
+      if (!t || !isMine(t)) { closePanels(); return; }
       var to = escalateSelect.value;
       var reason = escalateReason.value.trim();
       if (!to || !reason) return;
@@ -971,7 +1005,7 @@ document.addEventListener('DOMContentLoaded', function () {
     if (resolveConfirmBtn) {
       resolveConfirmBtn.addEventListener('click', function () {
         var t = tickets.filter(function (x) { return x.id === selectedId; })[0];
-        if (!t) return;
+        if (!t || !isMine(t)) { closePanels(); return; }
         var summary = resolveSummaryInput.value.trim();
         if (!summary) {
           if (resolveSummaryField) resolveSummaryField.classList.add('invalid');
@@ -1043,7 +1077,8 @@ document.addEventListener('DOMContentLoaded', function () {
       assignBtn.disabled = t.assignedAgent === agent.name;
       assignBtn.textContent = t.assignedAgent === agent.name ? 'Assigned to you' : 'Assign to me';
       var reassignBtn = document.getElementById('reassignBtn');
-      reassignBtn.disabled = !t.assignedAgent || t.status === 'Closed';
+      reassignBtn.disabled = !canReassign(t);
+      reassignBtn.textContent = t.assignedAgent ? 'Reassign…' : 'Assign to…';
       renderStatusActions(t);
       document.getElementById('messageCustomerBtn').setAttribute('href', 'ticket-chat.html?ticket=' + encodeURIComponent(t.id) + '&role=agent');
 
