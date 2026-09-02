@@ -58,6 +58,50 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   }
 
+  // ---- Agent directory (docketAgents): shared by agent sign-in, the agent dashboard's
+  // reassign panel, and the admin console — this replaces the old hardcoded roster array
+  // with real records an admin can create, so they persist and are the same list everywhere.
+  var AGENT_SEED_NAMES = ['Maya Owusu', 'Kwame Boateng', 'Ama Serwaa', 'Yaw Mensah', 'Efia Asante'];
+
+  function genAgentId() {
+    return 'AGT-2026-' + String(Math.floor(Math.random() * 900000) + 100000).slice(0, 6);
+  }
+
+  function slugAgentEmail(name) {
+    return name.trim().toLowerCase().replace(/[^a-z\s]/g, '').trim().replace(/\s+/g, '.') + '@docket.com';
+  }
+
+  function loadAgents() {
+    var agents = [];
+    try { agents = JSON.parse(localStorage.getItem('docketAgents')) || []; } catch (e) { agents = []; }
+    if (!agents.length) {
+      // First run: seed the directory from the old mock roster, so tickets already
+      // assigned to these names (from earlier sessions) still resolve to a real record.
+      agents = AGENT_SEED_NAMES.map(function (name) {
+        return { id: genAgentId(), name: name, email: slugAgentEmail(name), createdAt: new Date().toISOString(), createdBy: 'seed' };
+      });
+      localStorage.setItem('docketAgents', JSON.stringify(agents));
+    }
+    return agents;
+  }
+
+  function saveAgents(agents) {
+    localStorage.setItem('docketAgents', JSON.stringify(agents));
+  }
+
+  // Looks up (or silently creates) a directory record by email for an agent signing
+  // in, so the "any password works" demo sign-in still lands on a stable identity —
+  // and on the identity an admin set up, if that email was created from the admin console.
+  function findOrCreateAgentByEmail(email, fallbackName) {
+    var agents = loadAgents();
+    var match = agents.filter(function (a) { return a.email.toLowerCase() === email.toLowerCase(); })[0];
+    if (match) return match;
+    var rec = { id: genAgentId(), name: fallbackName, email: email, createdAt: new Date().toISOString(), createdBy: 'self-signup' };
+    agents.push(rec);
+    saveAgents(agents);
+    return rec;
+  }
+
   // ---- Agent sign-in (agent-login.html): validation + confirmation stub ----
   var agentLoginForm = document.getElementById('agentLoginForm');
   if (agentLoginForm) {
@@ -85,17 +129,19 @@ document.addEventListener('DOMContentLoaded', function () {
 
       var namePart = email.value.trim().split('@')[0].replace(/[._]/g, ' ');
       var displayName = namePart.replace(/\b\w/g, function (c) { return c.toUpperCase(); });
-      var id = 'AGT-2026-' + String(Math.floor(Math.random() * 900000) + 100000).slice(0, 6);
+      // Reuses an existing directory record if this email was set up from the admin
+      // console (so that identity sticks), otherwise creates one on the fly.
+      var record = findOrCreateAgentByEmail(email.value.trim(), displayName);
 
-      document.getElementById('agentStubId').textContent = id;
-      document.getElementById('agentStubName').textContent = ', ' + displayName.split(' ')[0];
+      document.getElementById('agentStubId').textContent = record.id;
+      document.getElementById('agentStubName').textContent = ', ' + record.name.split(' ')[0];
       agentLoginForm.style.display = 'none';
       document.getElementById('agentStub').classList.add('show');
 
       localStorage.setItem('docketAgent', JSON.stringify({
-        id: id,
-        name: displayName,
-        email: email.value.trim(),
+        id: record.id,
+        name: record.name,
+        email: record.email,
         keepSignedIn: document.getElementById('keepSignedIn').checked
       }));
     });
@@ -777,8 +823,9 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     // ---- Reassign / escalate ----
-    // Mock roster since there's no real agent directory to look up against.
-    var AGENT_ROSTER = ['Maya Owusu', 'Kwame Boateng', 'Ama Serwaa', 'Yaw Mensah', 'Efia Asante'];
+    // Pulled live from the shared agent directory (docketAgents), so an agent added
+    // from the admin console shows up here without any change to this file.
+    var AGENT_ROSTER = loadAgents().map(function (a) { return a.name; });
     var ESCALATION_TARGETS = ['Tier 2 Support', 'Team Lead', 'Engineering', 'Network Operations Center'];
 
     function formatNoteTime(d) {
@@ -1372,6 +1419,343 @@ document.addEventListener('DOMContentLoaded', function () {
     logoutBtn.addEventListener('click', function () {
       localStorage.removeItem('docketUser');
       window.location.href = 'landing.html';
+    });
+  }
+
+  // ---- Admin console (admin-dashboard.html): sitewide queue overview, assign/reassign
+  // any ticket regardless of who currently holds it, and manage the agent directory ----
+  var adminConsole = document.getElementById('adminConsole');
+  if (adminConsole) {
+    var adminUser = null;
+    try { adminUser = JSON.parse(localStorage.getItem('docketAdmin')); } catch (e) { adminUser = null; }
+    if (!adminUser) {
+      window.location.href = 'admin-login.html';
+      return;
+    }
+
+    var adminInitials = adminUser.name.trim().split(/\s+/).map(function (p) { return p[0]; }).slice(0, 2).join('').toUpperCase() || '?';
+    document.getElementById('adminInitials').textContent = adminInitials;
+    document.getElementById('adminName').textContent = adminUser.name;
+    document.getElementById('adminId').textContent = adminUser.id;
+    document.getElementById('adminEmailDisplay').textContent = adminUser.email;
+    document.getElementById('adminChipInitials').textContent = adminInitials;
+    document.getElementById('adminChipName').textContent = adminUser.name.split(' ')[0];
+
+    document.getElementById('adminLogoutBtn').addEventListener('click', function () {
+      localStorage.removeItem('docketAdmin');
+      window.location.href = 'admin-login.html';
+    });
+
+    // Tickets — same shared docketTickets record every other view reads/writes
+    var adminTickets = [];
+    try { adminTickets = JSON.parse(localStorage.getItem('docketTickets')) || []; } catch (e) { adminTickets = []; }
+    adminTickets = adminTickets.map(function (t) {
+      if (!t.status) t.status = 'Assigned';
+      if (t.assignedAgent === undefined) t.assignedAgent = null;
+      if (!t.createdAt) t.createdAt = new Date().toISOString();
+      return t;
+    });
+
+    function persistAdminTickets() {
+      localStorage.setItem('docketTickets', JSON.stringify(adminTickets));
+      var latestT = null;
+      try { latestT = JSON.parse(localStorage.getItem('docketLatestTicket')); } catch (e) { latestT = null; }
+      if (latestT) {
+        var m = adminTickets.filter(function (t) { return t.id === latestT.id; })[0];
+        if (m) localStorage.setItem('docketLatestTicket', JSON.stringify(m));
+      }
+    }
+    persistAdminTickets();
+
+    function adminStatusClass(status) {
+      if (status === 'Resolved') return 'status-resolved';
+      if (status === 'Closed') return 'status-closed';
+      if (status === 'Reopened') return 'status-reopened';
+      if (status === 'In Progress') return 'status-progress';
+      if (status === 'Waiting') return 'status-waiting';
+      if (status === 'Escalated') return 'status-escalated';
+      return '';
+    }
+    function adminIsOpen(status) { return status !== 'Resolved' && status !== 'Closed'; }
+
+    var adminSelectedId = adminTickets.length ? adminTickets[0].id : null;
+    var adminSearchQuery = '', adminStatusFilter = '', adminCategoryFilter = '', adminAssigneeFilter = '';
+
+    function renderAdminStats() {
+      document.getElementById('adminStatOpen').textContent = adminTickets.filter(function (t) { return adminIsOpen(t.status); }).length;
+      document.getElementById('adminStatCritical').textContent = adminTickets.filter(function (t) { return t.priority === 'Critical' && adminIsOpen(t.status); }).length;
+      document.getElementById('adminStatUnassigned').textContent = adminTickets.filter(function (t) { return !t.assignedAgent && adminIsOpen(t.status); }).length;
+      document.getElementById('adminStatResolved').textContent = adminTickets.filter(function (t) { return t.status === 'Resolved' || t.status === 'Closed'; }).length;
+      document.getElementById('adminSidebarTicketCount').textContent = adminTickets.length;
+      document.getElementById('adminSidebarAgentCount').textContent = loadAgents().length;
+    }
+
+    function formatAdminNoteTime(d) {
+      var h = d.getHours(); var m = d.getMinutes();
+      var ampm = h >= 12 ? 'PM' : 'AM';
+      h = h % 12; if (h === 0) h = 12;
+      return h + ':' + (m < 10 ? '0' : '') + m + ' ' + ampm;
+    }
+    // Same internal-note trail agents leave for reassign/escalate, so an admin's
+    // assignment shows up in the ticket's existing chat thread too.
+    function addAdminNote(ticketId, text) {
+      var chatKey = 'docketChat:' + ticketId;
+      var msgs = [];
+      try { msgs = JSON.parse(localStorage.getItem(chatKey)) || []; } catch (e) { msgs = []; }
+      msgs.push({ from: 'agent', name: adminUser.name + ' (Admin)', text: text, time: formatAdminNoteTime(new Date()), visibility: 'internal' });
+      localStorage.setItem(chatKey, JSON.stringify(msgs));
+    }
+
+    var adminAssignPanel = document.getElementById('adminAssignPanel');
+    var adminAssignSelect = document.getElementById('adminAssignSelect');
+    var adminAssignNote = document.getElementById('adminAssignNote');
+
+    function openAdminAssignPanel(t) {
+      adminAssignSelect.innerHTML = '';
+      loadAgents().forEach(function (a) {
+        var opt = document.createElement('option');
+        opt.value = a.name; opt.textContent = a.name;
+        if (a.name === t.assignedAgent) opt.selected = true;
+        adminAssignSelect.appendChild(opt);
+      });
+      adminAssignNote.value = '';
+      adminAssignPanel.style.display = 'block';
+    }
+    function closeAdminAssignPanel() { adminAssignPanel.style.display = 'none'; }
+
+    document.getElementById('adminAssignBtn').addEventListener('click', function () {
+      var t = adminTickets.filter(function (x) { return x.id === adminSelectedId; })[0];
+      if (!t) return;
+      if (adminAssignPanel.style.display === 'block') { closeAdminAssignPanel(); return; }
+      openAdminAssignPanel(t);
+    });
+    document.getElementById('adminAssignCancelBtn').addEventListener('click', closeAdminAssignPanel);
+    document.getElementById('adminAssignConfirmBtn').addEventListener('click', function () {
+      var t = adminTickets.filter(function (x) { return x.id === adminSelectedId; })[0];
+      if (!t) return;
+      var to = adminAssignSelect.value;
+      if (!to) return;
+      var from = t.assignedAgent || 'Unassigned';
+      if (from === to) { closeAdminAssignPanel(); return; }
+      t.assignedAgent = to;
+      if (t.status === 'Created') t.status = 'Assigned';
+      persistAdminTickets();
+      var note = adminAssignNote.value.trim();
+      addAdminNote(t.id, (from === 'Unassigned' ? 'Assigned to ' + to : 'Reassigned from ' + from + ' to ' + to) + ' by an admin' + (note ? ' — ' + note : '.'));
+      closeAdminAssignPanel();
+      renderAdminStats(); renderAdminDetail(); renderAdminList();
+    });
+
+    function renderAdminDetail() {
+      var dash = document.getElementById('adminDash');
+      var t = adminTickets.filter(function (x) { return x.id === adminSelectedId; })[0];
+      if (!t) { dash.style.display = 'none'; return; }
+      dash.style.display = 'block';
+      closeAdminAssignPanel();
+
+      document.getElementById('adminDashId').textContent = t.id;
+      document.getElementById('adminDashSubject').textContent = t.subject;
+      document.getElementById('adminDashDescription').textContent = t.description ? t.description : 'No description provided.';
+      document.getElementById('adminDashCategory').textContent = t.category;
+      document.getElementById('adminDashPriority').textContent = t.priority;
+      document.getElementById('adminDashTeam').textContent = t.team;
+      document.getElementById('adminDashSla').textContent = t.sla;
+      document.getElementById('adminDashFiles').textContent = t.files ? t.files + ' attached' : 'None';
+      document.getElementById('adminDashEmail').textContent = t.email;
+      document.getElementById('adminDashAgent').textContent = t.assignedAgent || 'Unassigned';
+
+      var badge = document.getElementById('adminDashStatusBadge');
+      badge.textContent = t.status;
+      badge.className = 'status-badge ' + adminStatusClass(t.status);
+
+      var serviceBox = document.getElementById('adminDashServiceBox');
+      if (t.service) {
+        document.getElementById('adminDashService').textContent = t.service;
+        serviceBox.style.display = '';
+      } else {
+        serviceBox.style.display = 'none';
+      }
+
+      var escBanner = document.getElementById('adminDashEscalationBanner');
+      var escText = document.getElementById('adminDashEscalationText');
+      if (t.status === 'Escalated' && t.escalation) {
+        escBanner.style.display = 'flex';
+        escText.innerHTML = 'Escalated to <strong>' + t.escalation.to + '</strong> by ' + t.escalation.by + ': "' + t.escalation.reason + '"';
+      } else {
+        escBanner.style.display = 'none';
+      }
+
+      document.getElementById('adminOpenChatBtn').setAttribute('href', 'ticket-chat.html?ticket=' + encodeURIComponent(t.id) + '&role=agent');
+    }
+
+    function renderAdminList() {
+      var listEl = document.getElementById('adminQueueList');
+      var q = adminSearchQuery.trim().toLowerCase();
+      var filtered = adminTickets.filter(function (t) {
+        if (adminStatusFilter && t.status !== adminStatusFilter) return false;
+        if (adminCategoryFilter && t.category !== adminCategoryFilter) return false;
+        if (adminAssigneeFilter === 'Unassigned' && t.assignedAgent) return false;
+        if (adminAssigneeFilter && adminAssigneeFilter !== 'Unassigned' && t.assignedAgent !== adminAssigneeFilter) return false;
+        if (q) {
+          var haystack = (t.id + ' ' + t.subject + ' ' + (t.email || '')).toLowerCase();
+          if (haystack.indexOf(q) === -1) return false;
+        }
+        return true;
+      });
+
+      listEl.innerHTML = '';
+      if (!filtered.length) {
+        listEl.innerHTML = '<p class="queue-no-results">No tickets match your search or filters.</p>';
+        return;
+      }
+
+      filtered.forEach(function (t) {
+        var row = document.createElement('div');
+        row.className = 'history-row ' + adminStatusClass(t.status);
+        row.tabIndex = 0;
+        row.setAttribute('role', 'button');
+        row.setAttribute('aria-label', 'View details for ' + t.subject);
+        if (t.id === adminSelectedId) row.classList.add('active');
+        row.innerHTML =
+          '<div class="history-main">' +
+            '<p class="history-id">' + t.id + '</p>' +
+            '<p class="history-subject">' + t.subject + '</p>' +
+          '</div>' +
+          '<div class="history-meta">' +
+            '<span class="history-chip">' + t.category + '</span>' +
+            '<span class="history-chip">' + t.priority + '</span>' +
+            '<span class="history-chip">' + (t.assignedAgent ? t.assignedAgent : '<span class="history-unassigned">Unassigned</span>') + '</span>' +
+            '<span class="history-status">' + t.status + '</span>' +
+          '</div>';
+        row.addEventListener('click', function () { adminSelectedId = t.id; renderAdminDetail(); renderAdminList(); });
+        row.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); adminSelectedId = t.id; renderAdminDetail(); renderAdminList(); }
+        });
+        listEl.appendChild(row);
+      });
+    }
+
+    var aqAssignee = document.getElementById('adminQueueAssigneeFilter');
+    if (aqAssignee) {
+      loadAgents().forEach(function (a) {
+        var opt = document.createElement('option');
+        opt.value = a.name; opt.textContent = a.name;
+        aqAssignee.appendChild(opt);
+      });
+    }
+    var aqSearch = document.getElementById('adminQueueSearchInput');
+    var aqStatus = document.getElementById('adminQueueStatusFilter');
+    var aqCategory = document.getElementById('adminQueueCategoryFilter');
+    var aqClear = document.getElementById('adminQueueClearFilters');
+    if (aqSearch) aqSearch.addEventListener('input', function () { adminSearchQuery = aqSearch.value; renderAdminList(); });
+    if (aqStatus) aqStatus.addEventListener('change', function () { adminStatusFilter = aqStatus.value; renderAdminList(); });
+    if (aqCategory) aqCategory.addEventListener('change', function () { adminCategoryFilter = aqCategory.value; renderAdminList(); });
+    if (aqAssignee) aqAssignee.addEventListener('change', function () { adminAssigneeFilter = aqAssignee.value; renderAdminList(); });
+    if (aqClear) {
+      aqClear.addEventListener('click', function () {
+        adminSearchQuery = ''; adminStatusFilter = ''; adminCategoryFilter = ''; adminAssigneeFilter = '';
+        if (aqSearch) aqSearch.value = '';
+        if (aqStatus) aqStatus.value = '';
+        if (aqCategory) aqCategory.value = '';
+        if (aqAssignee) aqAssignee.value = '';
+        renderAdminList();
+      });
+    }
+
+    if (!adminTickets.length) {
+      document.getElementById('adminQueueEmpty').style.display = 'block';
+      document.getElementById('adminDash').style.display = 'none';
+    } else {
+      renderAdminStats(); renderAdminDetail(); renderAdminList();
+    }
+
+    // ---- Tabs: Tickets / Agents ----
+    document.querySelectorAll('.admin-tab').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        document.querySelectorAll('.admin-tab').forEach(function (b) { b.classList.remove('active'); });
+        btn.classList.add('active');
+        var tab = btn.dataset.tab;
+        document.getElementById('adminTicketsPanel').style.display = tab === 'tickets' ? '' : 'none';
+        document.getElementById('adminAgentsPanel').style.display = tab === 'agents' ? '' : 'none';
+        if (tab === 'agents') renderAgentDirectory();
+      });
+    });
+
+    // ---- Agents: directory list + create ----
+    function ticketCountFor(name) {
+      return adminTickets.filter(function (t) { return t.assignedAgent === name; }).length;
+    }
+
+    function renderAgentDirectory() {
+      var agents = loadAgents();
+      document.getElementById('adminAgentCountLabel').textContent = agents.length + (agents.length === 1 ? ' agent' : ' agents');
+      document.getElementById('adminSidebarAgentCount').textContent = agents.length;
+      var listEl = document.getElementById('adminAgentList');
+      listEl.innerHTML = '';
+      if (!agents.length) {
+        listEl.innerHTML = '<p class="queue-no-results">No agents yet — add the first one above.</p>';
+        return;
+      }
+      agents.forEach(function (a) {
+        var row = document.createElement('div');
+        row.className = 'history-row';
+        var sourceLabel = a.createdBy === 'seed' ? 'Seed data' : (a.createdBy === 'admin' ? 'Added by admin' : 'Self sign-in');
+        row.innerHTML =
+          '<div class="history-main">' +
+            '<p class="history-id">' + a.id + '</p>' +
+            '<p class="history-subject">' + a.name + '</p>' +
+          '</div>' +
+          '<div class="history-meta">' +
+            '<span class="history-chip">' + a.email + '</span>' +
+            '<span class="history-chip">' + ticketCountFor(a.name) + ' assigned</span>' +
+            '<span class="history-chip">' + sourceLabel + '</span>' +
+          '</div>';
+        listEl.appendChild(row);
+      });
+    }
+    renderAgentDirectory();
+
+    document.getElementById('addAgentBtn').addEventListener('click', function () {
+      var nameField = document.getElementById('newAgentName');
+      var emailField = document.getElementById('newAgentEmail');
+      var nameWrap = document.getElementById('f-newAgentName');
+      var emailWrap = document.getElementById('f-newAgentEmail');
+      var emailErr = document.getElementById('err-newAgentEmail');
+      emailErr.textContent = 'Enter a valid work email.';
+      var valid = true;
+
+      if (!nameField.value.trim()) { nameWrap.classList.add('invalid'); valid = false; }
+      else { nameWrap.classList.remove('invalid'); }
+
+      var emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailField.value.trim());
+      if (!emailOk) { emailWrap.classList.add('invalid'); valid = false; }
+      else { emailWrap.classList.remove('invalid'); }
+
+      if (valid) {
+        var agents = loadAgents();
+        var dupe = agents.some(function (a) { return a.email.toLowerCase() === emailField.value.trim().toLowerCase(); });
+        if (dupe) {
+          emailWrap.classList.add('invalid');
+          emailErr.textContent = 'An agent with this email already exists.';
+          valid = false;
+        }
+      }
+
+      if (!valid) return;
+
+      var agents2 = loadAgents();
+      agents2.push({
+        id: genAgentId(),
+        name: nameField.value.trim(),
+        email: emailField.value.trim(),
+        createdAt: new Date().toISOString(),
+        createdBy: 'admin'
+      });
+      saveAgents(agents2);
+      nameField.value = '';
+      emailField.value = '';
+      renderAgentDirectory();
+      renderAdminStats();
     });
   }
 

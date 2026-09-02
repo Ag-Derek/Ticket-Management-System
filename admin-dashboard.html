@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Docket — Admin console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-app="admin">
+<div class="scene">
+
+  <div class="topbar">
+    <a class="logo" href="landing.html">Docket.</a>
+    <span class="console-badge admin-badge"><span class="dot"></span>Admin Console</span>
+    <div class="topbar-actions">
+      <span class="agent-chip"><span class="av" id="adminChipInitials">—</span><span id="adminChipName">—</span></span>
+      <button class="btn-ghost btn-logout" type="button" id="adminLogoutBtn">Sign out</button>
+    </div>
+  </div>
+
+  <section class="portal-grid" id="adminConsole">
+
+    <!-- Admin profile -->
+    <aside class="card-panel profile-sidebar">
+      <div class="profile-avatar" id="adminInitials">—</div>
+      <h3 class="profile-name" id="adminName">—</h3>
+      <p class="profile-id" id="adminId">—</p>
+      <div class="profile-divider"></div>
+      <div class="profile-field">
+        <p class="k">Email</p>
+        <p class="v" id="adminEmailDisplay">—</p>
+      </div>
+      <div class="profile-field">
+        <p class="k">Agents</p>
+        <p class="v" id="adminSidebarAgentCount">—</p>
+      </div>
+      <div class="profile-field">
+        <p class="k">Tickets total</p>
+        <p class="v" id="adminSidebarTicketCount">—</p>
+      </div>
+    </aside>
+
+    <div class="portal-main">
+
+      <div class="filter-row">
+        <button class="filter-chip admin-tab active" data-tab="tickets" type="button">Tickets</button>
+        <button class="filter-chip admin-tab" data-tab="agents" type="button">Agents</button>
+      </div>
+
+      <!-- ============ TICKETS TAB ============ -->
+      <div id="adminTicketsPanel">
+
+        <div class="card-panel wide">
+          <h2 style="font-size:26px;margin-bottom:16px;">Queue overview</h2>
+          <div class="meta-grid stats">
+            <div class="meta-box"><p class="k">Open</p><p class="v" id="adminStatOpen">—</p></div>
+            <div class="meta-box"><p class="k">Critical</p><p class="v hot" id="adminStatCritical">—</p></div>
+            <div class="meta-box"><p class="k">Unassigned</p><p class="v" id="adminStatUnassigned">—</p></div>
+            <div class="meta-box"><p class="k">Resolved</p><p class="v" id="adminStatResolved">—</p></div>
+          </div>
+        </div>
+
+        <div class="card-panel wide">
+          <div id="adminQueueEmpty" class="queue-empty" style="display:none;">
+            <h2>Queue is empty</h2>
+            <p class="lead" style="margin:0;">Tickets submitted through the customer portal will show up here.</p>
+          </div>
+
+          <div class="dash" id="adminDash">
+            <div class="dash-head">
+              <div>
+                <p class="dash-id" id="adminDashId">TKT-2026-000000</p>
+                <h2 style="margin:0;" id="adminDashSubject">Ticket subject</h2>
+              </div>
+              <span class="status-badge" id="adminDashStatusBadge">Assigned</span>
+            </div>
+
+            <div class="detail-block">
+              <p class="k">Description</p>
+              <p class="detail-text" id="adminDashDescription">—</p>
+            </div>
+
+            <div class="meta-grid">
+              <div class="meta-box"><p class="k">Category</p><p class="v" id="adminDashCategory">—</p></div>
+              <div class="meta-box"><p class="k">Priority</p><p class="v" id="adminDashPriority">—</p></div>
+              <div class="meta-box"><p class="k">Assigned team</p><p class="v" id="adminDashTeam">—</p></div>
+              <div class="meta-box"><p class="k">SLA</p><p class="v" id="adminDashSla" style="font-size:12.5px;">—</p></div>
+              <div class="meta-box"><p class="k">Attachments</p><p class="v" id="adminDashFiles">—</p></div>
+              <div class="meta-box"><p class="k">Requester</p><p class="v" id="adminDashEmail" style="font-size:12.5px;">—</p></div>
+              <div class="meta-box" id="adminDashServiceBox" style="display:none;"><p class="k">Affected service</p><p class="v" id="adminDashService">—</p></div>
+            </div>
+
+            <div class="notify-banner">
+              <div class="ic">◆</div>
+              <p>Assigned agent: <strong id="adminDashAgent">Unassigned</strong></p>
+            </div>
+
+            <div class="notify-banner" id="adminDashEscalationBanner" style="display:none;">
+              <div class="ic">▲</div>
+              <p id="adminDashEscalationText"></p>
+            </div>
+
+            <div class="action-row">
+              <button class="btn-amber btn-inline" id="adminAssignBtn" type="button">Assign / reassign…</button>
+              <a class="btn-ghost btn-inline" id="adminOpenChatBtn" href="#">View conversation →</a>
+            </div>
+
+            <div class="inline-panel" id="adminAssignPanel" style="display:none;">
+              <p class="prompt">Assign this ticket to an agent</p>
+              <div class="field">
+                <label for="adminAssignSelect">Agent</label>
+                <select id="adminAssignSelect"></select>
+              </div>
+              <div class="field" style="margin-bottom:0;">
+                <label for="adminAssignNote">Note <span class="opt">(optional)</span></label>
+                <textarea id="adminAssignNote" placeholder="Why you're assigning it this way…" style="margin-bottom:14px;"></textarea>
+              </div>
+              <div class="panel-actions">
+                <button class="btn-amber btn-inline" id="adminAssignConfirmBtn" type="button">Confirm</button>
+                <button class="btn-ghost btn-inline" id="adminAssignCancelBtn" type="button">Cancel</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card-panel wide ticket-history">
+          <h3>All tickets</h3>
+          <div class="queue-search-row">
+            <div class="field search-field" style="margin-bottom:0;">
+              <input type="text" id="adminQueueSearchInput" class="queue-search-input" placeholder="Search by ticket #, subject, or requester email">
+            </div>
+            <select id="adminQueueStatusFilter" class="queue-filter-select">
+              <option value="">Any status</option>
+              <option>Created</option>
+              <option>Assigned</option>
+              <option>In Progress</option>
+              <option>Waiting</option>
+              <option>Escalated</option>
+              <option>Resolved</option>
+              <option>Reopened</option>
+              <option>Closed</option>
+            </select>
+            <select id="adminQueueCategoryFilter" class="queue-filter-select">
+              <option value="">Any category</option>
+              <option>Network</option>
+              <option>Application</option>
+              <option>Hardware</option>
+              <option>Access &amp; Identity</option>
+            </select>
+            <select id="adminQueueAssigneeFilter" class="queue-filter-select">
+              <option value="">Any agent</option>
+              <option value="Unassigned">Unassigned</option>
+            </select>
+            <button class="queue-clear-btn" id="adminQueueClearFilters" type="button">Clear</button>
+          </div>
+          <div class="history-list" id="adminQueueList"></div>
+        </div>
+
+      </div>
+
+      <!-- ============ AGENTS TAB ============ -->
+      <div id="adminAgentsPanel" style="display:none;">
+
+        <div class="card-panel wide">
+          <h2 style="font-size:26px;margin-bottom:6px;">Add an agent</h2>
+          <p class="lead" style="margin:0 0 20px;">They'll sign in at the agent console with this email — any password works in this demo, but the identity below is what sticks.</p>
+
+          <div class="row2">
+            <div class="field" id="f-newAgentName">
+              <label for="newAgentName">Full name</label>
+              <input type="text" id="newAgentName" placeholder="e.g. Nana Boateng">
+              <div class="err" id="err-newAgentName">Enter the agent's full name.</div>
+            </div>
+            <div class="field" id="f-newAgentEmail">
+              <label for="newAgentEmail">Work email</label>
+              <input type="email" id="newAgentEmail" placeholder="nana@docket.com">
+              <div class="err" id="err-newAgentEmail">Enter a valid work email.</div>
+            </div>
+          </div>
+
+          <button class="btn-amber" id="addAgentBtn" type="button" style="width:auto;padding:14px 28px;">Add agent</button>
+        </div>
+
+        <div class="card-panel wide ticket-history">
+          <h3>All agents <span id="adminAgentCountLabel" style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:var(--muted);text-transform:none;letter-spacing:0;">—</span></h3>
+          <div class="history-list" id="adminAgentList"></div>
+        </div>
+
+      </div>
+
+    </div>
+
+  </section>
+
+</div>
+<script src="app.js"></script>
+</body>
+</html>
