@@ -201,7 +201,7 @@ h1.display{
 .field input:focus,.field select:focus{outline:2px solid var(--amber-2);outline-offset:1px;border-color:transparent;}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
 .err{color:#B14A1F;font-size:12px;margin-top:6px;display:none;}
-.field.invalid input{border-color:#B14A1F;}
+.field.invalid input,.field.invalid textarea{border-color:#B14A1F;}
 .field.invalid .err{display:block;}
 .btn-amber{
   width:100%;font-family:'Inter',sans-serif;font-weight:600;font-size:15px;
@@ -333,6 +333,7 @@ h1.display{
 }
 .inline-panel .field select:focus,.inline-panel .field textarea:focus{outline:2px solid var(--amber-2);outline-offset:1px;border-color:transparent;}
 .inline-panel .field textarea{resize:vertical;min-height:64px;}
+.inline-panel .field.invalid textarea{border-color:#B14A1F;}
 .inline-panel .panel-actions{display:flex;gap:10px;flex-wrap:wrap;}
 .inline-panel .panel-actions .btn-amber.btn-inline,.inline-panel .panel-actions .btn-ghost.btn-inline{margin-top:0;}
 

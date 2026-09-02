@@ -375,6 +375,19 @@ document.addEventListener('DOMContentLoaded', function () {
         }
       }
 
+      // Show what the agent said fixed the issue, once they've resolved it —
+      // this stays visible even if the ticket later gets reopened.
+      var resSummaryBlock = document.getElementById('dashResolutionSummaryBlock');
+      var resSummaryText = document.getElementById('dashResolutionSummaryText');
+      if (resSummaryBlock && resSummaryText) {
+        if (t.resolutionSummary) {
+          resSummaryText.textContent = t.resolutionSummary.text;
+          resSummaryBlock.style.display = 'block';
+        } else {
+          resSummaryBlock.style.display = 'none';
+        }
+      }
+
       // CSAT: prompt for a rating once a ticket is Closed and unrated; show the
       // submitted rating (read-only) once one exists.
       var csatPanel = document.getElementById('csatPanel');
@@ -734,10 +747,13 @@ document.addEventListener('DOMContentLoaded', function () {
         btn.type = 'button';
         btn.className = 'btn-ghost btn-inline';
         btn.textContent = m.label;
-        // Escalating needs a target + reason first, so open that panel instead
-        // of transitioning straight away like every other status move does.
+        // Escalating needs a target + reason first, and resolving needs a
+        // summary first, so open the relevant panel instead of transitioning
+        // straight away like every other status move does.
         if (m.to === 'Escalated') {
           btn.addEventListener('click', function () { openEscalatePanel(t); });
+        } else if (m.to === 'Resolved') {
+          btn.addEventListener('click', function () { openResolvePanel(t); });
         } else {
           btn.addEventListener('click', function () { changeStatus(t, m.to); });
         }
@@ -780,14 +796,19 @@ document.addEventListener('DOMContentLoaded', function () {
     var escalatePanel = document.getElementById('escalatePanel');
     var escalateSelect = document.getElementById('escalateSelect');
     var escalateReason = document.getElementById('escalateReason');
+    var resolvePanel = document.getElementById('resolvePanel');
+    var resolveSummaryField = document.getElementById('f-resolveSummary');
+    var resolveSummaryInput = document.getElementById('resolveSummary');
 
     function closePanels() {
       reassignPanel.style.display = 'none';
       escalatePanel.style.display = 'none';
+      if (resolvePanel) resolvePanel.style.display = 'none';
     }
 
     function openReassignPanel(t) {
       escalatePanel.style.display = 'none';
+      if (resolvePanel) resolvePanel.style.display = 'none';
       reassignSelect.innerHTML = '';
       AGENT_ROSTER.filter(function (name) { return name !== agent.name; }).forEach(function (name) {
         var opt = document.createElement('option');
@@ -800,6 +821,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function openEscalatePanel(t) {
       reassignPanel.style.display = 'none';
+      if (resolvePanel) resolvePanel.style.display = 'none';
       escalateSelect.innerHTML = '';
       ESCALATION_TARGETS.forEach(function (name) {
         var opt = document.createElement('option');
@@ -808,6 +830,15 @@ document.addEventListener('DOMContentLoaded', function () {
       });
       escalateReason.value = '';
       escalatePanel.style.display = 'block';
+    }
+
+    function openResolvePanel(t) {
+      if (!resolvePanel) return;
+      reassignPanel.style.display = 'none';
+      escalatePanel.style.display = 'none';
+      resolveSummaryInput.value = '';
+      if (resolveSummaryField) resolveSummaryField.classList.remove('invalid');
+      resolvePanel.style.display = 'block';
     }
 
     document.getElementById('reassignBtn').addEventListener('click', function () {
@@ -846,6 +877,32 @@ document.addEventListener('DOMContentLoaded', function () {
       closePanels();
       renderStats(); renderDetail(); renderList();
     });
+
+    // Resolving requires a summary — this is the only path that can set a
+    // ticket to Resolved, so there's no way to skip leaving one.
+    var resolveCancelBtn = document.getElementById('resolveCancelBtn');
+    var resolveConfirmBtn = document.getElementById('resolveConfirmBtn');
+    if (resolveCancelBtn) resolveCancelBtn.addEventListener('click', closePanels);
+    if (resolveConfirmBtn) {
+      resolveConfirmBtn.addEventListener('click', function () {
+        var t = tickets.filter(function (x) { return x.id === selectedId; })[0];
+        if (!t) return;
+        var summary = resolveSummaryInput.value.trim();
+        if (!summary) {
+          if (resolveSummaryField) resolveSummaryField.classList.add('invalid');
+          resolveSummaryInput.focus();
+          return;
+        }
+        if (resolveSummaryField) resolveSummaryField.classList.remove('invalid');
+        if (!canTransition(t.status, 'Resolved')) { closePanels(); return; }
+        t.status = 'Resolved';
+        t.resolutionSummary = { text: summary, by: agent.name, at: new Date().toISOString() };
+        persistTickets();
+        addInternalNote(t.id, 'Marked resolved — ' + summary);
+        closePanels();
+        renderStats(); renderDetail(); renderList();
+      });
+    }
 
     function renderStats() {
       var open = tickets.filter(function (t) { return isOpenStatus(t.status); }).length;
@@ -929,6 +986,19 @@ document.addEventListener('DOMContentLoaded', function () {
           escText.innerHTML = 'Escalated to <strong>' + t.escalation.to + '</strong> by ' + t.escalation.by + ': "' + t.escalation.reason + '"';
         } else {
           escBanner.style.display = 'none';
+        }
+      }
+
+      // Show the resolution summary left when this ticket was marked resolved,
+      // so it stays visible to any agent even after the customer reopens it.
+      var resSummaryBanner = document.getElementById('dashResolutionSummaryBanner');
+      var resSummaryText = document.getElementById('dashResolutionSummaryText');
+      if (resSummaryBanner && resSummaryText) {
+        if (t.resolutionSummary) {
+          resSummaryBanner.style.display = 'flex';
+          resSummaryText.textContent = 'Resolution (' + t.resolutionSummary.by + '): ' + t.resolutionSummary.text;
+        } else {
+          resSummaryBanner.style.display = 'none';
         }
       }
 

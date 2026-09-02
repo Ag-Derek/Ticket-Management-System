@@ -76,8 +76,8 @@
           <div class="meta-grid">
             <div class="meta-box"><p class="k">Category</p><p class="v" id="dashCategory">—</p></div>
             <div class="meta-box"><p class="k">Priority</p><p class="v" id="dashPriority">—</p></div>
-            <div class="meta-box" id="dashServiceBox" style="display:none;"><p class="k">Affected service</p><p class="v" id="dashService">—</p></div>
             <div class="meta-box"><p class="k">Assigned team</p><p class="v" id="dashTeam">—</p></div>
+             <div class="meta-box" id="dashServiceBox" style="display:none;"><p class="k">Affected service</p><p class="v" id="dashService">—</p></div>
             <div class="meta-box"><p class="k">SLA</p><p class="v" id="dashSla" style="font-size:12.5px;">—</p></div>
             <div class="meta-box"><p class="k">Attachments</p><p class="v" id="dashFiles">—</p></div>
             <div class="meta-box"><p class="k">Requester</p><p class="v" id="dashEmail" style="font-size:12.5px;">—</p></div>
@@ -86,6 +86,11 @@
           <div class="notify-banner">
             <div class="ic">◆</div>
             <p>Assigned agent: <strong id="dashAgent">Unassigned</strong></p>
+          </div>
+
+          <div class="notify-banner" id="dashResolutionSummaryBanner" style="display:none;">
+            <div class="ic">✓</div>
+            <p id="dashResolutionSummaryText"></p>
           </div>
 
           <div class="notify-banner" id="dashResolutionBanner" style="display:none;">
@@ -139,6 +144,19 @@
             <div class="panel-actions">
               <button class="btn-amber btn-inline" id="escalateConfirmBtn" type="button">Confirm escalate</button>
               <button class="btn-ghost btn-inline" id="escalateCancelBtn" type="button">Cancel</button>
+            </div>
+          </div>
+
+          <div class="inline-panel" id="resolvePanel" style="display:none;">
+            <p class="prompt">Resolve this ticket</p>
+            <div class="field" id="f-resolveSummary" style="margin-bottom:0;">
+              <label for="resolveSummary">Resolution summary</label>
+              <textarea id="resolveSummary" placeholder="What fixed it? Include the steps taken so the customer and any future agent have context…" style="margin-bottom:6px;"></textarea>
+              <div class="err">Add a resolution summary before marking this ticket resolved.</div>
+            </div>
+            <div class="panel-actions" style="margin-top:14px;">
+              <button class="btn-amber btn-inline" id="resolveConfirmBtn" type="button">Confirm resolve</button>
+              <button class="btn-ghost btn-inline" id="resolveCancelBtn" type="button">Cancel</button>
             </div>
           </div>
         </div>
