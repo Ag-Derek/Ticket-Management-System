@@ -18,6 +18,18 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   }
 
+  // Mints a PREFIX-2026-XXXXXX id, retrying against whatever record ids you pass in
+  // so two tickets/agents/users minted in this browser can't collide. After 20 misses
+  // (vanishingly unlikely with 900,000 possible suffixes) it falls back to a
+  // Date.now()-derived suffix so this can never loop forever.
+  function genUniqueId(prefix, existingIds) {
+    for (var attempt = 0; attempt < 20; attempt++) {
+      var id = prefix + '-2026-' + String(Math.floor(Math.random() * 900000) + 100000);
+      if (existingIds.indexOf(id) === -1) return id;
+    }
+    return prefix + '-2026-' + String(Date.now()).slice(-6);
+  }
+
   // Profile form validation + confirmation stub
   var profileForm = document.getElementById('profileForm');
   if (profileForm) {
@@ -78,7 +90,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
       if (!valid) return;
 
-      var id = 'USR-2026-' + String(Math.floor(Math.random() * 900000) + 100000).slice(0, 6);
+      var id = genUniqueId('USR', []);
       var newUser = { id: id, name: name.value.trim(), email: email.value.trim() };
       showProfileStub(newUser, false);
 
@@ -92,8 +104,9 @@ document.addEventListener('DOMContentLoaded', function () {
   // with real records an admin can create, so they persist and are the same list everywhere.
   var AGENT_SEED_NAMES = ['Maya Owusu', 'Kwame Boateng', 'Ama Serwaa', 'Yaw Mensah', 'Efia Asante'];
 
-  function genAgentId() {
-    return 'AGT-2026-' + String(Math.floor(Math.random() * 900000) + 100000).slice(0, 6);
+  function genAgentId(existingAgents) {
+    var existingIds = (existingAgents || []).map(function (a) { return a.id; });
+    return genUniqueId('AGT', existingIds);
   }
 
   function slugAgentEmail(name) {
@@ -106,8 +119,11 @@ document.addEventListener('DOMContentLoaded', function () {
     if (!agents.length) {
       // First run: seed the directory from the old mock roster, so tickets already
       // assigned to these names (from earlier sessions) still resolve to a real record.
+      var seeded = [];
       agents = AGENT_SEED_NAMES.map(function (name) {
-        return { id: genAgentId(), name: name, email: slugAgentEmail(name), createdAt: new Date().toISOString(), createdBy: 'seed' };
+        var rec = { id: genAgentId(seeded), name: name, email: slugAgentEmail(name), createdAt: new Date().toISOString(), createdBy: 'seed' };
+        seeded.push(rec);
+        return rec;
       });
       localStorage.setItem('docketAgents', JSON.stringify(agents));
     }
@@ -125,7 +141,7 @@ document.addEventListener('DOMContentLoaded', function () {
     var agents = loadAgents();
     var match = agents.filter(function (a) { return a.email.toLowerCase() === email.toLowerCase(); })[0];
     if (match) return match;
-    var rec = { id: genAgentId(), name: fallbackName, email: email, createdAt: new Date().toISOString(), createdBy: 'self-signup' };
+    var rec = { id: genAgentId(agents), name: fallbackName, email: email, createdAt: new Date().toISOString(), createdBy: 'self-signup' };
     agents.push(rec);
     saveAgents(agents);
     return rec;
@@ -307,11 +323,14 @@ document.addEventListener('DOMContentLoaded', function () {
         setTimeout(function () { s.classList.add('active'); }, delays[i] || i * 500);
       });
 
-      var ticketId = 'TKT-2026-' + String(Math.floor(Math.random() * 900000) + 100000).slice(0, 6);
       var team = teamByCategory[category.value] || teams[Math.floor(Math.random() * teams.length)];
       var sla = slaByPriority[priority.value] || slaByPriority.Medium;
 
       setTimeout(function () {
+        var existingTickets = [];
+        try { existingTickets = JSON.parse(localStorage.getItem('docketTickets')) || []; } catch (e) { existingTickets = []; }
+        var ticketId = genUniqueId('TKT', existingTickets.map(function (t) { return t.id; }));
+
         var ticket = {
           id: ticketId,
           subject: subject.value.trim(),
@@ -331,10 +350,8 @@ document.addEventListener('DOMContentLoaded', function () {
         // Save as the latest ticket (for the portal's headline card)…
         localStorage.setItem('docketLatestTicket', JSON.stringify(ticket));
         // …and append it to the full history list.
-        var all = [];
-        try { all = JSON.parse(localStorage.getItem('docketTickets')) || []; } catch (e) { all = []; }
-        all.unshift(ticket);
-        localStorage.setItem('docketTickets', JSON.stringify(all));
+        existingTickets.unshift(ticket);
+        localStorage.setItem('docketTickets', JSON.stringify(existingTickets));
 
         window.location.href = 'portal.html';
       }, 2600);
@@ -1820,7 +1837,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
       var agents2 = loadAgents();
       agents2.push({
-        id: genAgentId(),
+        id: genAgentId(agents2),
         name: nameField.value.trim(),
         email: emailField.value.trim(),
         createdAt: new Date().toISOString(),
