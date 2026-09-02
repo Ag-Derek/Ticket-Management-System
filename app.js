@@ -225,8 +225,24 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function portalStatusClass(status) {
       if (status === 'Resolved') return 'status-resolved';
+      if (status === 'Closed') return 'status-closed';
+      if (status === 'Reopened') return 'status-reopened';
       if (status === 'In Progress') return 'status-progress';
+      if (status === 'Waiting') return 'status-waiting';
+      if (status === 'Escalated') return 'status-escalated';
       return '';
+    }
+
+    // Writes a status change back to the shared ticket store (docketTickets + docketLatestTicket)
+    // and keeps this page's in-memory copies (`all`, `latest`) in sync.
+    function persistPortalTicket(t) {
+      var idx = all.findIndex(function (x) { return x.id === t.id; });
+      if (idx !== -1) all[idx] = t;
+      localStorage.setItem('docketTickets', JSON.stringify(all));
+      if (latest && latest.id === t.id) {
+        latest = t;
+        localStorage.setItem('docketLatestTicket', JSON.stringify(t));
+      }
     }
 
     // Profile sidebar
@@ -245,7 +261,9 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     // Loads a ticket's full details into the dashboard card and highlights its row
+    var currentTicketId = null;
     function showTicketDetails(t) {
+      currentTicketId = t.id;
       document.getElementById('dashId').textContent = t.id;
       document.getElementById('dashSubject').textContent = t.subject;
       document.getElementById('dashCategory').textContent = t.category;
@@ -263,8 +281,131 @@ document.addEventListener('DOMContentLoaded', function () {
       var messageAgentBtn = document.getElementById('messageAgentBtn');
       if (messageAgentBtn) messageAgentBtn.setAttribute('href', 'ticket-chat.html?ticket=' + encodeURIComponent(t.id) + '&role=customer');
 
+      // Confirm fix / reopen only apply while a ticket is sitting in "Resolved",
+      // waiting on the customer to say whether the fix actually worked.
+      var resolutionRow = document.getElementById('resolutionRow');
+      var notifyBanner = document.getElementById('dashNotifyBanner');
+      if (resolutionRow) {
+        resolutionRow.style.display = t.status === 'Resolved' ? 'flex' : 'none';
+      }
+      if (notifyBanner) {
+        var bannerText = notifyBanner.querySelector('p');
+        if (t.status === 'Closed') {
+          bannerText.innerHTML = 'You confirmed the fix for <strong id="dashEmail">' + t.email + '</strong> — this ticket is closed.';
+        } else if (t.status === 'Reopened') {
+          bannerText.innerHTML = 'You reopened this ticket — <strong id="dashEmail">' + t.email + '</strong> has been notified.';
+        } else {
+          bannerText.innerHTML = 'Confirmation sent to <strong id="dashEmail">' + t.email + '</strong> via the notification service.';
+        }
+      }
+
+      // CSAT: prompt for a rating once a ticket is Closed and unrated; show the
+      // submitted rating (read-only) once one exists.
+      var csatPanel = document.getElementById('csatPanel');
+      var csatDone = document.getElementById('csatDone');
+      if (csatPanel && csatDone) {
+        if (t.status === 'Closed' && !t.csat) {
+          csatPanel.style.display = 'block';
+          csatDone.style.display = 'none';
+          resetCsatForm();
+        } else if (t.status === 'Closed' && t.csat) {
+          csatPanel.style.display = 'none';
+          csatDone.style.display = 'flex';
+          renderCsatDone(t.csat);
+        } else {
+          csatPanel.style.display = 'none';
+          csatDone.style.display = 'none';
+        }
+      }
+
+      // Re-sync every row's status pill/class against `all`, since confirming or
+      // reopening this ticket updates its status without a full re-render.
       document.querySelectorAll('.history-row').forEach(function (r) {
-        r.classList.toggle('active', r.dataset.ticketId === t.id);
+        var match = all.filter(function (x) { return x.id === r.dataset.ticketId; })[0];
+        if (!match) return;
+        r.className = 'history-row ' + portalStatusClass(match.status) + (r.dataset.ticketId === t.id ? ' active' : '');
+        var statusEl = r.querySelector('.history-status');
+        if (statusEl) statusEl.textContent = match.status;
+      });
+    }
+
+    var confirmFixBtn = document.getElementById('confirmFixBtn');
+    if (confirmFixBtn) {
+      confirmFixBtn.addEventListener('click', function () {
+        var t = all.filter(function (x) { return x.id === currentTicketId; })[0];
+        if (!t) return;
+        t.status = 'Closed';
+        persistPortalTicket(t);
+        showTicketDetails(t);
+      });
+    }
+
+    var reopenBtn = document.getElementById('reopenBtn');
+    if (reopenBtn) {
+      reopenBtn.addEventListener('click', function () {
+        var t = all.filter(function (x) { return x.id === currentTicketId; })[0];
+        if (!t) return;
+        t.status = 'Reopened';
+        persistPortalTicket(t);
+        showTicketDetails(t);
+      });
+    }
+
+    // ---- CSAT rating (shown on a Closed ticket until the customer rates it) ----
+    var csatSelected = 0;
+    var csatStarEls = document.querySelectorAll('#csatStars .csat-star');
+    var csatSubmitBtn = document.getElementById('csatSubmitBtn');
+    var csatCommentEl = document.getElementById('csatComment');
+
+    function paintCsatStars(upTo) {
+      csatStarEls.forEach(function (star) {
+        star.classList.toggle('active', Number(star.dataset.value) <= upTo);
+      });
+    }
+
+    function resetCsatForm() {
+      csatSelected = 0;
+      paintCsatStars(0);
+      if (csatSubmitBtn) csatSubmitBtn.disabled = true;
+      if (csatCommentEl) csatCommentEl.value = '';
+    }
+
+    function renderCsatDone(csat) {
+      var doneStars = document.getElementById('csatDoneStars');
+      var doneText = document.getElementById('csatDoneText');
+      if (doneStars) {
+        doneStars.innerHTML = '';
+        for (var i = 1; i <= 5; i++) {
+          var s = document.createElement('span');
+          s.className = 'csat-star' + (i <= csat.score ? ' active' : '');
+          s.textContent = '★';
+          doneStars.appendChild(s);
+        }
+      }
+      if (doneText) {
+        doneText.innerHTML = 'You rated this ticket <strong>' + csat.score + '/5</strong>' +
+          (csat.comment ? ' — thanks for the note!' : ' — thanks for the feedback!');
+      }
+    }
+
+    csatStarEls.forEach(function (star) {
+      star.addEventListener('click', function () {
+        csatSelected = Number(star.dataset.value);
+        paintCsatStars(csatSelected);
+        if (csatSubmitBtn) csatSubmitBtn.disabled = false;
+      });
+      star.addEventListener('mouseenter', function () { paintCsatStars(Number(star.dataset.value)); });
+      star.addEventListener('mouseleave', function () { paintCsatStars(csatSelected); });
+    });
+
+    if (csatSubmitBtn) {
+      csatSubmitBtn.addEventListener('click', function () {
+        if (!csatSelected) return;
+        var t = all.filter(function (x) { return x.id === currentTicketId; })[0];
+        if (!t) return;
+        t.csat = { score: csatSelected, comment: (csatCommentEl ? csatCommentEl.value.trim() : ''), submittedAt: new Date().toISOString() };
+        persistPortalTicket(t);
+        showTicketDetails(t);
       });
     }
 
@@ -362,15 +503,188 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function statusClass(status) {
       if (status === 'Resolved') return 'status-resolved';
+      if (status === 'Closed') return 'status-closed';
+      if (status === 'Reopened') return 'status-reopened';
       if (status === 'In Progress') return 'status-progress';
+      if (status === 'Waiting') return 'status-waiting';
+      if (status === 'Escalated') return 'status-escalated';
       return '';
     }
 
+    // Closed tickets are done, same as Resolved, for queue-health purposes.
+    // Reopened tickets are back in the open pile until an agent resolves them again.
+    function isOpenStatus(status) { return status !== 'Resolved' && status !== 'Closed'; }
+
+    // ---- Ticket status state machine ----
+    // Each key is a status an agent can act on; the value lists every status
+    // it's allowed to move to next, with the button label to show for that move.
+    // Anything not listed here (e.g. from Resolved/Closed) has no agent-facing
+    // action — those only change via the customer's confirm/reopen on the portal.
+    var STATUS_TRANSITIONS = {
+      // No entry for 'Created': a ticket must be assigned to an agent (via
+      // "Assign to me") before any status action becomes available.
+      'Assigned': [
+        { to: 'In Progress', label: 'Start progress' }
+      ],
+      'In Progress': [
+        { to: 'Waiting', label: 'Mark waiting on customer' },
+        { to: 'Escalated', label: 'Escalate' },
+        { to: 'Resolved', label: 'Mark resolved' }
+      ],
+      'Waiting': [
+        { to: 'In Progress', label: 'Resume progress' }
+      ],
+      'Escalated': [
+        { to: 'In Progress', label: 'Resume progress' }
+      ],
+      'Reopened': [
+        { to: 'In Progress', label: 'Resume progress' }
+      ]
+    };
+
+    // True only if `to` is one of the moves STATUS_TRANSITIONS allows from `from`.
+    // This is the single gate everything else in the agent view goes through, so
+    // there's no path in the UI that can set a status out of sequence.
+    function canTransition(from, to) {
+      var moves = STATUS_TRANSITIONS[from] || [];
+      return moves.some(function (m) { return m.to === to; });
+    }
+
+    function changeStatus(t, toStatus) {
+      if (!canTransition(t.status, toStatus)) return false;
+      t.status = toStatus;
+      persistTickets();
+      renderStats(); renderDetail(); renderList();
+      return true;
+    }
+
+    function renderStatusActions(t) {
+      var wrap = document.getElementById('statusActions');
+      wrap.innerHTML = '';
+      var moves = STATUS_TRANSITIONS[t.status] || [];
+      moves.forEach(function (m) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn-ghost btn-inline';
+        btn.textContent = m.label;
+        // Escalating needs a target + reason first, so open that panel instead
+        // of transitioning straight away like every other status move does.
+        if (m.to === 'Escalated') {
+          btn.addEventListener('click', function () { openEscalatePanel(t); });
+        } else {
+          btn.addEventListener('click', function () { changeStatus(t, m.to); });
+        }
+        wrap.appendChild(btn);
+      });
+      if (!moves.length) {
+        var note = document.createElement('span');
+        note.className = 'history-status';
+        note.textContent = t.status === 'Resolved' ? 'Awaiting customer' : (t.status === 'Closed' ? 'Closed' : '');
+        if (note.textContent) wrap.appendChild(note);
+      }
+    }
+
+    // ---- Reassign / escalate ----
+    // Mock roster since there's no real agent directory to look up against.
+    var AGENT_ROSTER = ['Maya Owusu', 'Kwame Boateng', 'Ama Serwaa', 'Yaw Mensah', 'Efia Asante'];
+    var ESCALATION_TARGETS = ['Tier 2 Support', 'Team Lead', 'Engineering', 'Network Operations Center'];
+
+    function formatNoteTime(d) {
+      var h = d.getHours(); var m = d.getMinutes();
+      var ampm = h >= 12 ? 'PM' : 'AM';
+      h = h % 12; if (h === 0) h = 12;
+      return h + ':' + (m < 10 ? '0' : '') + m + ' ' + ampm;
+    }
+
+    // Drops an internal-only note into the ticket's existing chat thread, so
+    // reassignments and escalations leave the same kind of trail agents already
+    // see for internal comments — no separate history UI needed.
+    function addInternalNote(ticketId, text) {
+      var chatKey = 'docketChat:' + ticketId;
+      var msgs = [];
+      try { msgs = JSON.parse(localStorage.getItem(chatKey)) || []; } catch (e) { msgs = []; }
+      msgs.push({ from: 'agent', name: agent.name, text: text, time: formatNoteTime(new Date()), visibility: 'internal' });
+      localStorage.setItem(chatKey, JSON.stringify(msgs));
+    }
+
+    var reassignPanel = document.getElementById('reassignPanel');
+    var reassignSelect = document.getElementById('reassignSelect');
+    var reassignNote = document.getElementById('reassignNote');
+    var escalatePanel = document.getElementById('escalatePanel');
+    var escalateSelect = document.getElementById('escalateSelect');
+    var escalateReason = document.getElementById('escalateReason');
+
+    function closePanels() {
+      reassignPanel.style.display = 'none';
+      escalatePanel.style.display = 'none';
+    }
+
+    function openReassignPanel(t) {
+      escalatePanel.style.display = 'none';
+      reassignSelect.innerHTML = '';
+      AGENT_ROSTER.filter(function (name) { return name !== agent.name; }).forEach(function (name) {
+        var opt = document.createElement('option');
+        opt.value = name; opt.textContent = name;
+        reassignSelect.appendChild(opt);
+      });
+      reassignNote.value = '';
+      reassignPanel.style.display = 'block';
+    }
+
+    function openEscalatePanel(t) {
+      reassignPanel.style.display = 'none';
+      escalateSelect.innerHTML = '';
+      ESCALATION_TARGETS.forEach(function (name) {
+        var opt = document.createElement('option');
+        opt.value = name; opt.textContent = name;
+        escalateSelect.appendChild(opt);
+      });
+      escalateReason.value = '';
+      escalatePanel.style.display = 'block';
+    }
+
+    document.getElementById('reassignBtn').addEventListener('click', function () {
+      var t = tickets.filter(function (x) { return x.id === selectedId; })[0];
+      if (!t) return;
+      if (reassignPanel.style.display === 'block') { closePanels(); return; }
+      openReassignPanel(t);
+    });
+    document.getElementById('reassignCancelBtn').addEventListener('click', closePanels);
+    document.getElementById('reassignConfirmBtn').addEventListener('click', function () {
+      var t = tickets.filter(function (x) { return x.id === selectedId; })[0];
+      if (!t) return;
+      var to = reassignSelect.value;
+      if (!to) return;
+      var from = t.assignedAgent || 'Unassigned';
+      t.assignedAgent = to;
+      persistTickets();
+      var note = reassignNote.value.trim();
+      addInternalNote(t.id, 'Reassigned from ' + from + ' to ' + to + (note ? ' — ' + note : '.'));
+      closePanels();
+      renderStats(); renderDetail(); renderList();
+    });
+
+    document.getElementById('escalateCancelBtn').addEventListener('click', closePanels);
+    document.getElementById('escalateConfirmBtn').addEventListener('click', function () {
+      var t = tickets.filter(function (x) { return x.id === selectedId; })[0];
+      if (!t) return;
+      var to = escalateSelect.value;
+      var reason = escalateReason.value.trim();
+      if (!to || !reason) return;
+      if (!canTransition(t.status, 'Escalated')) { closePanels(); return; }
+      t.status = 'Escalated';
+      t.escalation = { to: to, reason: reason, by: agent.name, at: new Date().toISOString() };
+      persistTickets();
+      addInternalNote(t.id, 'Escalated to ' + to + ' — ' + reason);
+      closePanels();
+      renderStats(); renderDetail(); renderList();
+    });
+
     function renderStats() {
-      var open = tickets.filter(function (t) { return t.status !== 'Resolved'; }).length;
-      var critical = tickets.filter(function (t) { return t.priority === 'Critical' && t.status !== 'Resolved'; }).length;
-      var unassigned = tickets.filter(function (t) { return !t.assignedAgent && t.status !== 'Resolved'; }).length;
-      var resolved = tickets.filter(function (t) { return t.status === 'Resolved'; }).length;
+      var open = tickets.filter(function (t) { return isOpenStatus(t.status); }).length;
+      var critical = tickets.filter(function (t) { return t.priority === 'Critical' && isOpenStatus(t.status); }).length;
+      var unassigned = tickets.filter(function (t) { return !t.assignedAgent && isOpenStatus(t.status); }).length;
+      var resolved = tickets.filter(function (t) { return t.status === 'Resolved' || t.status === 'Closed'; }).length;
       var mine = tickets.filter(function (t) { return t.assignedAgent === agent.name; }).length;
 
       document.getElementById('statOpen').textContent = open;
@@ -389,6 +703,7 @@ document.addEventListener('DOMContentLoaded', function () {
         return;
       }
       dash.style.display = 'block';
+      closePanels();
 
       document.getElementById('dashId').textContent = t.id;
       document.getElementById('dashSubject').textContent = t.subject;
@@ -405,12 +720,59 @@ document.addEventListener('DOMContentLoaded', function () {
       badge.className = 'status-badge ' + statusClass(t.status);
 
       var assignBtn = document.getElementById('assignToMeBtn');
-      var resolveBtn = document.getElementById('resolveBtn');
       assignBtn.disabled = t.assignedAgent === agent.name;
       assignBtn.textContent = t.assignedAgent === agent.name ? 'Assigned to you' : 'Assign to me';
-      resolveBtn.disabled = t.status === 'Resolved';
-      resolveBtn.textContent = t.status === 'Resolved' ? 'Resolved' : 'Mark resolved';
+      var reassignBtn = document.getElementById('reassignBtn');
+      reassignBtn.disabled = !t.assignedAgent || t.status === 'Closed';
+      renderStatusActions(t);
       document.getElementById('messageCustomerBtn').setAttribute('href', 'ticket-chat.html?ticket=' + encodeURIComponent(t.id) + '&role=agent');
+
+      // Surface whether the customer has confirmed the fix or reopened the ticket.
+      var resBanner = document.getElementById('dashResolutionBanner');
+      var resText = document.getElementById('dashResolutionText');
+      if (resBanner && resText) {
+        if (t.status === 'Closed') {
+          resBanner.style.display = 'flex';
+          resText.innerHTML = 'Customer <strong>confirmed the fix</strong> — ticket closed.';
+        } else if (t.status === 'Reopened') {
+          resBanner.style.display = 'flex';
+          resText.innerHTML = 'Customer <strong>reopened this ticket</strong> — take another look.';
+        } else {
+          resBanner.style.display = 'none';
+        }
+      }
+
+      // Flag when the ticket is currently escalated and why.
+      var escBanner = document.getElementById('dashEscalationBanner');
+      var escText = document.getElementById('dashEscalationText');
+      if (escBanner && escText) {
+        if (t.status === 'Escalated' && t.escalation) {
+          escBanner.style.display = 'flex';
+          escText.innerHTML = 'Escalated to <strong>' + t.escalation.to + '</strong> by ' + t.escalation.by + ': "' + t.escalation.reason + '"';
+        } else {
+          escBanner.style.display = 'none';
+        }
+      }
+
+      // Show the customer's CSAT rating, once they've submitted one.
+      var csatBanner = document.getElementById('dashCsatBanner');
+      if (csatBanner) {
+        if (t.csat) {
+          csatBanner.style.display = 'flex';
+          var csatStars = document.getElementById('dashCsatStars');
+          csatStars.innerHTML = '';
+          for (var i = 1; i <= 5; i++) {
+            var s = document.createElement('span');
+            s.className = 'csat-star' + (i <= t.csat.score ? ' active' : '');
+            s.textContent = '★';
+            csatStars.appendChild(s);
+          }
+          var csatText = document.getElementById('dashCsatText');
+          csatText.textContent = 'Customer rated this ' + t.csat.score + '/5' + (t.csat.comment ? ': "' + t.csat.comment + '"' : '.');
+        } else {
+          csatBanner.style.display = 'none';
+        }
+      }
     }
 
     function renderList() {
@@ -454,14 +816,6 @@ document.addEventListener('DOMContentLoaded', function () {
       if (!t) return;
       t.assignedAgent = agent.name;
       if (t.status === 'Created') t.status = 'Assigned';
-      persistTickets();
-      renderStats(); renderDetail(); renderList();
-    });
-
-    document.getElementById('resolveBtn').addEventListener('click', function () {
-      var t = tickets.filter(function (x) { return x.id === selectedId; })[0];
-      if (!t) return;
-      t.status = 'Resolved';
       persistTickets();
       renderStats(); renderDetail(); renderList();
     });

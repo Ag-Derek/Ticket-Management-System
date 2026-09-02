@@ -289,6 +289,50 @@ h1.display{
 .notify-banner p{margin:0;font-size:13px;color:var(--muted);}
 .notify-banner strong{color:var(--ink);}
 
+/* ---- CSAT rating ---- */
+.csat-panel,.csat-done{
+  background:var(--white);border:1px solid var(--line);border-radius:14px;
+  padding:18px 20px;margin-bottom:22px;
+}
+.csat-prompt{margin:0 0 12px;font-size:14.5px;font-weight:600;color:var(--ink);}
+.csat-stars{display:flex;gap:6px;margin-bottom:14px;}
+.csat-star{
+  background:none;border:none;cursor:pointer;font-size:26px;line-height:1;padding:2px;
+  color:var(--line);transition:color .12s,transform .12s;
+}
+.csat-star:hover,.csat-star.hover{color:var(--amber-1);}
+.csat-star.active{color:var(--amber-2);}
+.csat-star:focus-visible{outline:2px solid var(--amber-2);outline-offset:2px;border-radius:4px;}
+.csat-panel textarea{
+  width:100%;min-height:64px;resize:vertical;border:1px solid var(--line);border-radius:10px;
+  padding:10px 12px;font-family:'Inter',sans-serif;font-size:13.5px;color:var(--ink);
+  background:var(--paper-alt);margin-bottom:14px;box-sizing:border-box;
+}
+.csat-panel textarea:focus-visible{outline:2px solid var(--amber-2);outline-offset:1px;}
+.csat-panel .btn-amber.btn-inline{margin-top:0;}
+.csat-done{display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
+.csat-done .csat-stars{margin-bottom:0;}
+.csat-stars-readonly .csat-star{cursor:default;pointer-events:none;}
+.csat-done p{margin:0;font-size:13px;color:var(--muted);}
+.csat-done strong{color:var(--ink);}
+
+/* ---- Inline agent action panels (reassign / escalate) ---- */
+.inline-panel{
+  background:var(--white);border:1px solid var(--line);border-radius:14px;
+  padding:18px 20px;margin-bottom:22px;
+}
+.inline-panel .prompt{margin:0 0 14px;font-size:14.5px;font-weight:600;color:var(--ink);}
+.inline-panel .field{margin-bottom:14px;}
+.inline-panel .field select,.inline-panel .field textarea{
+  width:100%;font-family:'Inter',sans-serif;font-size:14px;padding:12px 14px;
+  border:1px solid var(--line);border-radius:10px;background:var(--paper-alt);color:var(--ink);
+  box-sizing:border-box;
+}
+.inline-panel .field select:focus,.inline-panel .field textarea:focus{outline:2px solid var(--amber-2);outline-offset:1px;border-color:transparent;}
+.inline-panel .field textarea{resize:vertical;min-height:64px;}
+.inline-panel .panel-actions{display:flex;gap:10px;flex-wrap:wrap;}
+.inline-panel .panel-actions .btn-amber.btn-inline,.inline-panel .panel-actions .btn-ghost.btn-inline{margin-top:0;}
+
 /* ---- Portal layout: profile sidebar + main column ---- */
 .portal-grid{
   display:grid;
@@ -403,10 +447,18 @@ h1.display{
 .btn-ghost:disabled:hover{background:transparent;color:var(--ink);}
 .status-badge.status-progress{background:var(--paper-alt);color:var(--ink);border:1px solid var(--line);}
 .status-badge.status-resolved{background:var(--ink);color:#fff;}
+.status-badge.status-closed{background:var(--ink);color:#fff;}
+.status-badge.status-reopened{background:#fff;color:#B14A1F;border:1px solid #B14A1F;}
+.status-badge.status-waiting{background:#fff;color:#8A6A00;border:1px solid #8A6A00;}
+.status-badge.status-escalated{background:#fff;color:#B1291F;border:1px solid #B1291F;}
 .history-row .history-status{
   font-size:11px;font-weight:600;letter-spacing:.03em;text-transform:uppercase;color:var(--muted);
 }
 .history-row.status-resolved{opacity:.6;}
+.history-row.status-closed{opacity:.6;}
+.history-row.status-reopened{border-color:#B14A1F;}
+.history-row.status-waiting{border-color:#8A6A00;}
+.history-row.status-escalated{border-color:#B1291F;}
 .history-row .history-unassigned{color:#B14A1F;}
 .queue-empty{text-align:center;padding:20px 0;}
 
