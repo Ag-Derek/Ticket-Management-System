@@ -243,7 +243,8 @@ document.addEventListener('DOMContentLoaded', function () {
           files: files.length,
           email: (user && user.email) ? user.email : 'your inbox',
           status: 'Created',
-          assignedAgent: null
+          assignedAgent: null,
+          createdAt: new Date().toISOString()
         };
 
         // Save as the latest ticket (for the portal's headline card)…
@@ -664,6 +665,7 @@ document.addEventListener('DOMContentLoaded', function () {
     tickets = tickets.map(function (t) {
       if (!t.status) t.status = 'Assigned';
       if (t.assignedAgent === undefined) t.assignedAgent = null;
+      if (!t.createdAt) t.createdAt = new Date().toISOString();
       return t;
     });
 
@@ -677,8 +679,15 @@ document.addEventListener('DOMContentLoaded', function () {
         if (match) localStorage.setItem('docketLatestTicket', JSON.stringify(match));
       }
     }
+    // Save any status/assignedAgent/createdAt defaults backfilled above so they
+    // stay stable across reloads instead of being recomputed (and drifting) each time.
+    persistTickets();
 
     var currentFilter = 'All';
+    var searchQuery = '';
+    var statusFilter = '';
+    var categoryFilter = '';
+    var dateFilter = '';
     var selectedId = tickets.length ? tickets[0].id : null;
 
     function statusClass(status) {
@@ -1025,13 +1034,30 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function renderList() {
       var listEl = document.getElementById('queueList');
+      var q = searchQuery.trim().toLowerCase();
       var filtered = tickets.filter(function (t) {
-        if (currentFilter === 'All') return true;
-        if (currentFilter === 'Mine') return t.assignedAgent === agent.name;
-        return t.priority === currentFilter;
+        if (currentFilter === 'Mine' && t.assignedAgent !== agent.name) return false;
+        if (currentFilter !== 'All' && currentFilter !== 'Mine' && t.priority !== currentFilter) return false;
+        if (statusFilter && t.status !== statusFilter) return false;
+        if (categoryFilter && t.category !== categoryFilter) return false;
+        if (dateFilter) {
+          var createdDate = t.createdAt ? t.createdAt.slice(0, 10) : '';
+          if (createdDate !== dateFilter) return false;
+        }
+        if (q) {
+          var haystack = (t.id + ' ' + t.subject + ' ' + (t.email || '')).toLowerCase();
+          if (haystack.indexOf(q) === -1) return false;
+        }
+        return true;
       });
 
       listEl.innerHTML = '';
+
+      if (!filtered.length) {
+        listEl.innerHTML = '<p class="queue-no-results">No tickets match your search or filters.</p>';
+        return;
+      }
+
       filtered.forEach(function (t) {
         var row = document.createElement('div');
         row.className = 'history-row ' + statusClass(t.status);
@@ -1076,6 +1102,48 @@ document.addEventListener('DOMContentLoaded', function () {
         renderList();
       });
     });
+
+    // FR-14: search by ticket number/requester/subject, plus status/category/date filters
+    var queueSearchInput = document.getElementById('queueSearchInput');
+    var queueStatusFilter = document.getElementById('queueStatusFilter');
+    var queueCategoryFilter = document.getElementById('queueCategoryFilter');
+    var queueDateFilter = document.getElementById('queueDateFilter');
+    var queueClearFilters = document.getElementById('queueClearFilters');
+
+    if (queueSearchInput) {
+      queueSearchInput.addEventListener('input', function () {
+        searchQuery = queueSearchInput.value;
+        renderList();
+      });
+    }
+    if (queueStatusFilter) {
+      queueStatusFilter.addEventListener('change', function () {
+        statusFilter = queueStatusFilter.value;
+        renderList();
+      });
+    }
+    if (queueCategoryFilter) {
+      queueCategoryFilter.addEventListener('change', function () {
+        categoryFilter = queueCategoryFilter.value;
+        renderList();
+      });
+    }
+    if (queueDateFilter) {
+      queueDateFilter.addEventListener('change', function () {
+        dateFilter = queueDateFilter.value;
+        renderList();
+      });
+    }
+    if (queueClearFilters) {
+      queueClearFilters.addEventListener('click', function () {
+        searchQuery = ''; statusFilter = ''; categoryFilter = ''; dateFilter = '';
+        if (queueSearchInput) queueSearchInput.value = '';
+        if (queueStatusFilter) queueStatusFilter.value = '';
+        if (queueCategoryFilter) queueCategoryFilter.value = '';
+        if (queueDateFilter) queueDateFilter.value = '';
+        renderList();
+      });
+    }
 
     if (!tickets.length) {
       document.getElementById('queueEmpty').style.display = 'block';

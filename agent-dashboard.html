@@ -165,6 +165,31 @@
       <!-- Full queue -->
       <div class="card-panel wide ticket-history">
         <h3>All tickets</h3>
+        <div class="queue-search-row" id="queueSearchRow">
+          <div class="search-field">
+            <input type="text" id="queueSearchInput" class="queue-search-input" placeholder="Search by ticket #, requester email, or subject">
+          </div>
+          <select id="queueStatusFilter" class="queue-filter-select" aria-label="Filter by status">
+            <option value="">All statuses</option>
+            <option>Created</option>
+            <option>Assigned</option>
+            <option>In Progress</option>
+            <option>Waiting</option>
+            <option>Escalated</option>
+            <option>Resolved</option>
+            <option>Reopened</option>
+            <option>Closed</option>
+          </select>
+          <select id="queueCategoryFilter" class="queue-filter-select" aria-label="Filter by category">
+            <option value="">All categories</option>
+            <option>Network</option>
+            <option>Application</option>
+            <option>Hardware</option>
+            <option>Access &amp; Identity</option>
+          </select>
+          <input type="date" id="queueDateFilter" class="queue-date-input" aria-label="Filter by date created">
+          <button type="button" id="queueClearFilters" class="queue-clear-btn">Clear filters</button>
+        </div>
         <div class="filter-row" id="filterRow">
           <button class="filter-chip active" data-filter="All" type="button">All</button>
           <button class="filter-chip" data-filter="Critical" type="button">Critical</button>
