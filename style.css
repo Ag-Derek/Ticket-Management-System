@@ -445,6 +445,43 @@ h1.display{
 .btn-amber.btn-inline,.btn-ghost.btn-inline{width:auto;margin-top:0;padding:12px 22px;}
 .btn-ghost:disabled,.btn-amber:disabled{opacity:.45;cursor:not-allowed;}
 .btn-ghost:disabled:hover{background:transparent;color:var(--ink);}
+@keyframes badgePulse{0%{box-shadow:0 0 0 0 rgba(224,116,42,.55);}100%{box-shadow:0 0 0 10px rgba(224,116,42,0);}}
+.status-badge.pulse{animation:badgePulse 1s ease;}
+
+/* Live status-change toasts (portal.html) */
+.status-toast-wrap{
+  position:fixed;bottom:28px;right:28px;z-index:80;
+  display:flex;flex-direction:column;gap:10px;
+  width:min(340px,calc(100vw - 40px));
+  pointer-events:none;
+}
+.status-toast{
+  pointer-events:auto;
+  display:flex;align-items:flex-start;gap:12px;
+  background:var(--ink);color:#fff;
+  border-radius:14px;padding:14px 14px 14px 16px;
+  box-shadow:0 16px 34px rgba(21,20,15,.32);
+  opacity:0;transform:translateY(14px);
+  animation:toastIn .35s ease forwards;
+}
+.status-toast.leaving{animation:toastOut .28s ease forwards;}
+@keyframes toastIn{to{opacity:1;transform:translateY(0);}}
+@keyframes toastOut{to{opacity:0;transform:translateY(-8px);}}
+.status-toast .ic{
+  width:28px;height:28px;border-radius:8px;flex:none;
+  background:linear-gradient(135deg,var(--amber-1),var(--amber-2));
+  display:flex;align-items:center;justify-content:center;
+  font-size:13px;color:#1E1300;
+}
+.status-toast .toast-body{flex:1;min-width:0;}
+.status-toast .toast-title{margin:0;font-size:12.5px;font-weight:600;font-family:'IBM Plex Mono',monospace;letter-spacing:.2px;}
+.status-toast .toast-sub{margin:3px 0 0;font-size:13px;color:#D9D6C9;}
+.status-toast .toast-sub strong{color:#fff;}
+.status-toast .toast-close{
+  background:none;border:none;color:#9C9A90;cursor:pointer;
+  font-size:13px;line-height:1;padding:2px;flex:none;
+}
+.status-toast .toast-close:hover{color:#fff;}
 .status-badge.status-progress{background:var(--paper-alt);color:var(--ink);border:1px solid var(--line);}
 .status-badge.status-resolved{background:var(--ink);color:#fff;}
 .status-badge.status-closed{background:var(--ink);color:#fff;}

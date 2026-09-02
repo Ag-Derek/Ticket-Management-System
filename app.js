@@ -223,6 +223,13 @@ document.addEventListener('DOMContentLoaded', function () {
       if (latestMatch) latest = latestMatch;
     }
 
+    // Snapshot of each ticket's status as this tab currently knows it, so a
+    // change made elsewhere (an agent updating status on their dashboard, or
+    // this same customer with the portal open in a second tab) can be told
+    // apart from a status this tab already displayed.
+    var knownStatuses = {};
+    all.forEach(function (t) { knownStatuses[t.id] = t.status; });
+
     function portalStatusClass(status) {
       if (status === 'Resolved') return 'status-resolved';
       if (status === 'Closed') return 'status-closed';
@@ -452,6 +459,97 @@ document.addEventListener('DOMContentLoaded', function () {
         if (activeRow) activeRow.classList.add('active');
       }
     }
+
+    // ---- FR-4: live notifications on status change ----
+    // Status changes happen on the agent dashboard (a different tab/window),
+    // so this tab needs to notice the shared localStorage record changing
+    // and refresh in place instead of requiring the customer to reload.
+
+    function showStatusToast(ticket, fromStatus, toStatus) {
+      var wrap = document.getElementById('statusToastWrap');
+      if (!wrap) return;
+      var toast = document.createElement('div');
+      toast.className = 'status-toast';
+      toast.innerHTML =
+        '<div class="ic">✓</div>' +
+        '<div class="toast-body">' +
+          '<p class="toast-title">' + ticket.id + '</p>' +
+          '<p class="toast-sub">' + (ticket.subject ? ticket.subject + ' — ' : '') +
+            'now <strong>' + toStatus + '</strong> (was ' + (fromStatus || 'Created') + ')</p>' +
+        '</div>' +
+        '<button type="button" class="toast-close" aria-label="Dismiss notification">✕</button>';
+      wrap.appendChild(toast);
+
+      function dismiss() {
+        toast.classList.add('leaving');
+        setTimeout(function () { toast.remove(); }, 280);
+      }
+      toast.querySelector('.toast-close').addEventListener('click', dismiss);
+      setTimeout(dismiss, 6000);
+    }
+
+    function pulseStatusBadge() {
+      var badge = document.getElementById('dashStatusBadge');
+      if (!badge) return;
+      badge.classList.remove('pulse');
+      void badge.offsetWidth; // restart the animation if it's already mid-pulse
+      badge.classList.add('pulse');
+    }
+
+    // Parses the latest `docketTickets` value, diffs it against what this tab
+    // last knew, refreshes the dashboard/history in place, and toasts every
+    // ticket whose status actually moved.
+    function applyRemoteTicketUpdate(raw) {
+      if (!raw) return;
+      var updated;
+      try { updated = JSON.parse(raw) || []; } catch (err) { return; }
+      updated.forEach(function (t) {
+        if (!t.status) t.status = 'Created';
+        if (t.assignedAgent === undefined) t.assignedAgent = null;
+      });
+
+      var changedList = [];
+      updated.forEach(function (t) {
+        var prevStatus = knownStatuses[t.id];
+        if (prevStatus !== undefined && prevStatus !== t.status) {
+          changedList.push({ ticket: t, from: prevStatus, to: t.status });
+        }
+        knownStatuses[t.id] = t.status;
+      });
+
+      if (!changedList.length) return;
+
+      all = updated;
+      if (latest) {
+        var freshLatest = all.filter(function (x) { return x.id === latest.id; })[0];
+        if (freshLatest) latest = freshLatest;
+      }
+      // Re-showing the currently open ticket also re-syncs every history row's
+      // status pill/class against the fresh `all` array (see showTicketDetails).
+      if (currentTicketId) {
+        var openTicket = all.filter(function (x) { return x.id === currentTicketId; })[0];
+        if (openTicket) showTicketDetails(openTicket);
+      }
+
+      changedList.forEach(function (c) {
+        showStatusToast(c.ticket, c.from, c.to);
+        if (c.ticket.id === currentTicketId) pulseStatusBadge();
+      });
+    }
+
+    // `storage` only fires in *other* tabs/windows of this origin — exactly
+    // what's needed here, since it means this tab's own writes (confirm fix,
+    // reopen, CSAT) never re-trigger a toast about themselves.
+    window.addEventListener('storage', function (e) {
+      if (e.key === 'docketTickets') applyRemoteTicketUpdate(e.newValue);
+    });
+
+    // Light polling fallback in case the storage event doesn't reach this tab
+    // (some embedded/preview contexts don't relay it) — harmless either way,
+    // since applyRemoteTicketUpdate is a no-op once knownStatuses is caught up.
+    setInterval(function () {
+      applyRemoteTicketUpdate(localStorage.getItem('docketTickets'));
+    }, 4000);
   }
 
   // ---- Agent queue (agent-dashboard.html): stats + filterable list + ticket actions ----
