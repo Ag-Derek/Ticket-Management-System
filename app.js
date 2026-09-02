@@ -21,6 +21,41 @@ document.addEventListener('DOMContentLoaded', function () {
   // Profile form validation + confirmation stub
   var profileForm = document.getElementById('profileForm');
   if (profileForm) {
+
+    // Returning-user check: if a profile already exists on this device, show it
+    // straight away instead of minting a brand-new USR id every time someone
+    // passes through login -> profile.
+    function showProfileStub(user, isReturning) {
+      document.getElementById('stubId').textContent = user.id;
+      document.getElementById('stubName').textContent = ', ' + user.name.trim().split(' ')[0];
+      document.getElementById('stubLead').textContent = isReturning
+        ? 'Welcome back — we found a saved profile on this device.'
+        : 'Your details are saved.';
+      profileForm.style.display = 'none';
+      document.getElementById('stub').classList.add('show');
+      var notYouLink = document.getElementById('notYouLink');
+      notYouLink.style.display = isReturning ? 'block' : 'none';
+    }
+
+    var existingUser = null;
+    try { existingUser = JSON.parse(localStorage.getItem('docketUser')); } catch (e) { existingUser = null; }
+    if (existingUser && existingUser.id && existingUser.name) {
+      showProfileStub(existingUser, true);
+    }
+
+    document.getElementById('notYouLink').addEventListener('click', function (e) {
+      e.preventDefault();
+      localStorage.removeItem('docketUser');
+      document.getElementById('notYouLink').style.display = 'none';
+      document.getElementById('stub').classList.remove('show');
+      profileForm.style.display = '';
+      document.getElementById('fullName').value = '';
+      document.getElementById('email').value = '';
+      document.getElementById('phone').value = '';
+      document.getElementById('dept').value = '';
+      document.getElementById('org').value = '';
+    });
+
     document.getElementById('submitProfile').addEventListener('click', function () {
       var name = document.getElementById('fullName');
       var email = document.getElementById('email');
@@ -44,17 +79,11 @@ document.addEventListener('DOMContentLoaded', function () {
       if (!valid) return;
 
       var id = 'USR-2026-' + String(Math.floor(Math.random() * 900000) + 100000).slice(0, 6);
-      document.getElementById('stubId').textContent = id;
-      document.getElementById('stubName').textContent = ', ' + name.value.trim().split(' ')[0];
-      profileForm.style.display = 'none';
-      document.getElementById('stub').classList.add('show');
+      var newUser = { id: id, name: name.value.trim(), email: email.value.trim() };
+      showProfileStub(newUser, false);
 
       // Hand the profile off to the ticket page (stands in for a real DB lookup by user id)
-      localStorage.setItem('docketUser', JSON.stringify({
-        id: id,
-        name: name.value.trim(),
-        email: email.value.trim()
-      }));
+      localStorage.setItem('docketUser', JSON.stringify(newUser));
     });
   }
 
