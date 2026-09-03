@@ -43,7 +43,15 @@ function seedAdmin() {
   console.log('Seeded admin account admin@docket.com (or confirmed it already exists).');
 }
 
-seedAgents();
-seedAdmin();
+function seed() {
+  seedAgents();
+  seedAdmin();
 
-console.log('Seed complete. Database file: db/docket.db (relative to project root: ./docket.db).');
+  console.log('Seed complete. Database file: ./docket.db');
+}
+
+if (require.main === module) {
+  seed();
+}
+
+module.exports = { seed };

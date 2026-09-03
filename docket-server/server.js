@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const db = require('./db/connection');
+const { seed } = require('./db/seed');
 
 const app = express();
 app.use(cors());
@@ -25,6 +26,9 @@ app.use('/api/tickets', require('./routes/tickets'));
 app.use('/api/tickets/:ticketId/comments', require('./routes/comments'));
 
 const PORT = process.env.PORT || 4000;
+
+seed();
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Docket API listening on http://localhost:${PORT}`);
 });
