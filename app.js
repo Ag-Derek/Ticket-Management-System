@@ -859,7 +859,10 @@ document.addEventListener('DOMContentLoaded', function () {
     // else on a ticket nobody has touched yet — so a teammate's ticket
     // doesn't have to be "assigned to me" first just to hand it over.
     function canReassign(t) {
-      if (t.status === 'Closed') return false;
+      // Resolved means the ticket is sitting with the customer awaiting their
+      // confirm-fix/reopen decision — swapping the owning agent mid-confirmation
+      // doesn't make sense, so it's locked the same as Closed.
+      if (t.status === 'Closed' || t.status === 'Resolved') return false;
       return isMine(t) || !t.assignedAgent;
     }
 
@@ -1301,6 +1304,62 @@ document.addEventListener('DOMContentLoaded', function () {
       renderDetail();
       renderList();
     }
+
+    // ---- FR-4 (agent side): pick up ticket changes made elsewhere ----
+    // An admin reassigning/escalating a ticket, or another agent acting on a
+    // shared one, writes to the same `docketTickets` record from a different
+    // tab/window. Without this, this queue would silently go stale until the
+    // agent manually reloads. Mirrors the customer portal's live-update
+    // handling below, but keyed on status+assignedAgent (a reassignment alone
+    // doesn't change status) and re-renders in place rather than toasting.
+    var agentKnownSignature = {};
+    tickets.forEach(function (t) { agentKnownSignature[t.id] = t.status + '|' + (t.assignedAgent || ''); });
+
+    function applyRemoteAgentUpdate(raw) {
+      if (!raw) return;
+      var updated;
+      try { updated = JSON.parse(raw) || []; } catch (err) { return; }
+      updated.forEach(function (t) {
+        if (!t.status) t.status = 'Assigned';
+        if (t.assignedAgent === undefined) t.assignedAgent = null;
+      });
+
+      // Only re-render on an actual change — the poll fires every 4s and a
+      // careless unconditional re-render would blow away whatever an agent
+      // is mid-typing in an open reassign/escalate/resolve panel.
+      var changed = updated.length !== tickets.length;
+      updated.forEach(function (t) {
+        var sig = t.status + '|' + (t.assignedAgent || '');
+        if (agentKnownSignature[t.id] !== sig) changed = true;
+        agentKnownSignature[t.id] = sig;
+      });
+      if (!changed) return;
+
+      tickets = updated;
+      if (selectedId && !tickets.some(function (t) { return t.id === selectedId; })) {
+        selectedId = tickets.length ? tickets[0].id : null;
+      }
+      if (!tickets.length) {
+        document.getElementById('queueEmpty').style.display = 'block';
+        document.getElementById('agentDash').style.display = 'none';
+      } else {
+        document.getElementById('queueEmpty').style.display = 'none';
+        document.getElementById('agentDash').style.display = '';
+        renderStats(); renderDetail(); renderList();
+      }
+    }
+
+    // `storage` only fires in *other* tabs/windows of this origin, so this
+    // tab's own writes (assign to me, status moves, reassign/escalate/resolve)
+    // never re-trigger themselves.
+    window.addEventListener('storage', function (e) {
+      if (e.key === 'docketTickets') applyRemoteAgentUpdate(e.newValue);
+    });
+    // Polling fallback for contexts where the storage event doesn't relay —
+    // a no-op once agentKnownSignature is caught up, same as the portal's.
+    setInterval(function () {
+      applyRemoteAgentUpdate(localStorage.getItem('docketTickets'));
+    }, 4000);
   }
 
   // ---- Ticket chat (ticket-chat.html): shared thread between agent and customer ----
@@ -1787,6 +1846,54 @@ document.addEventListener('DOMContentLoaded', function () {
     } else {
       renderAdminStats(); renderAdminDetail(); renderAdminList();
     }
+
+    // ---- FR-4 (admin side): pick up ticket changes made elsewhere ----
+    // Same gap as the agent queue — an agent moving a ticket's status (or
+    // another admin reassigning one) writes to `docketTickets` from a
+    // different tab/window, and this console would otherwise sit stale
+    // until reloaded. See the matching block in the agent-queue section
+    // above for the fuller rationale; kept as a separate copy here since
+    // it drives a different ticket array and set of render functions.
+    var adminKnownSignature = {};
+    adminTickets.forEach(function (t) { adminKnownSignature[t.id] = t.status + '|' + (t.assignedAgent || ''); });
+
+    function applyRemoteAdminUpdate(raw) {
+      if (!raw) return;
+      var updated;
+      try { updated = JSON.parse(raw) || []; } catch (err) { return; }
+      updated.forEach(function (t) {
+        if (!t.status) t.status = 'Assigned';
+        if (t.assignedAgent === undefined) t.assignedAgent = null;
+      });
+
+      var changed = updated.length !== adminTickets.length;
+      updated.forEach(function (t) {
+        var sig = t.status + '|' + (t.assignedAgent || '');
+        if (adminKnownSignature[t.id] !== sig) changed = true;
+        adminKnownSignature[t.id] = sig;
+      });
+      if (!changed) return;
+
+      adminTickets = updated;
+      if (adminSelectedId && !adminTickets.some(function (t) { return t.id === adminSelectedId; })) {
+        adminSelectedId = adminTickets.length ? adminTickets[0].id : null;
+      }
+      if (!adminTickets.length) {
+        document.getElementById('adminQueueEmpty').style.display = 'block';
+        document.getElementById('adminDash').style.display = 'none';
+      } else {
+        document.getElementById('adminQueueEmpty').style.display = 'none';
+        document.getElementById('adminDash').style.display = '';
+        renderAdminStats(); renderAdminDetail(); renderAdminList();
+      }
+    }
+
+    window.addEventListener('storage', function (e) {
+      if (e.key === 'docketTickets') applyRemoteAdminUpdate(e.newValue);
+    });
+    setInterval(function () {
+      applyRemoteAdminUpdate(localStorage.getItem('docketTickets'));
+    }, 4000);
 
     // ---- Tabs: Tickets / Agents ----
     document.querySelectorAll('.admin-tab').forEach(function (btn) {
