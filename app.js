@@ -506,15 +506,9 @@ document.addEventListener('DOMContentLoaded', function () {
         }
       }
 
-      // Re-sync every row's status pill/class against `all`, since confirming or
-      // reopening this ticket updates its status without a full re-render.
-      document.querySelectorAll('.history-row').forEach(function (r) {
-        var match = all.filter(function (x) { return x.id === r.dataset.ticketId; })[0];
-        if (!match) return;
-        r.className = 'history-row ' + portalStatusClass(match.status) + (r.dataset.ticketId === t.id ? ' active' : '');
-        var statusEl = r.querySelector('.history-status');
-        if (statusEl) statusEl.textContent = match.status;
-      });
+      // Re-render the (filtered) history list so status changes and the
+      // active-row highlight both stay in sync with what's currently shown.
+      renderHistoryList();
     }
 
     var confirmFixBtn = document.getElementById('confirmFixBtn');
@@ -597,23 +591,42 @@ document.addEventListener('DOMContentLoaded', function () {
       });
     }
 
-    if (!latest) {
-      dash.style.display = 'none';
-      var empty = document.getElementById('portalEmpty');
-      if (empty) empty.style.display = 'block';
-    } else {
-      showTicketDetails(latest);
-    }
-
+    // FR-15: search + status/category filters over "Your tickets" — previously
+    // a flat, unfiltered dump of every ticket, unlike the agent/admin queues
+    // which both already had search + filters over the same kind of list.
     var historySection = document.getElementById('ticketHistory');
-    var historyList = document.getElementById('historyList');
+    var historyListEl = document.getElementById('historyList');
+    var portalQueueSearchInput = document.getElementById('portalQueueSearchInput');
+    var portalQueueStatusFilter = document.getElementById('portalQueueStatusFilter');
+    var portalQueueCategoryFilter = document.getElementById('portalQueueCategoryFilter');
+    var portalQueueClearFilters = document.getElementById('portalQueueClearFilters');
+    var portalSearchQuery = '', portalStatusFilter = '', portalCategoryFilter = '';
 
-    if (all.length && historySection && historyList) {
+    function renderHistoryList() {
+      if (!historySection || !historyListEl) return;
+      if (!all.length) { historySection.style.display = 'none'; return; }
       historySection.style.display = 'block';
-      historyList.innerHTML = '';
-      all.forEach(function (t) {
+
+      var q = portalSearchQuery.trim().toLowerCase();
+      var filtered = all.filter(function (t) {
+        if (portalStatusFilter && t.status !== portalStatusFilter) return false;
+        if (portalCategoryFilter && t.category !== portalCategoryFilter) return false;
+        if (q) {
+          var haystack = (t.id + ' ' + t.subject + ' ' + (t.category || '')).toLowerCase();
+          if (haystack.indexOf(q) === -1) return false;
+        }
+        return true;
+      });
+
+      historyListEl.innerHTML = '';
+      if (!filtered.length) {
+        historyListEl.innerHTML = '<p class="queue-no-results">No tickets match your search or filters.</p>';
+        return;
+      }
+
+      filtered.forEach(function (t) {
         var row = document.createElement('div');
-        row.className = 'history-row ' + portalStatusClass(t.status);
+        row.className = 'history-row ' + portalStatusClass(t.status) + (t.id === currentTicketId ? ' active' : '');
         row.dataset.ticketId = t.id;
         row.tabIndex = 0;
         row.setAttribute('role', 'button');
@@ -633,13 +646,46 @@ document.addEventListener('DOMContentLoaded', function () {
         row.addEventListener('keydown', function (e) {
           if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); showTicketDetails(t); }
         });
-        historyList.appendChild(row);
+        historyListEl.appendChild(row);
       });
-      if (latest) {
-        var activeRow = historyList.querySelector('[data-ticket-id="' + latest.id + '"]');
-        if (activeRow) activeRow.classList.add('active');
-      }
     }
+
+    if (portalQueueSearchInput) {
+      portalQueueSearchInput.addEventListener('input', function () {
+        portalSearchQuery = portalQueueSearchInput.value;
+        renderHistoryList();
+      });
+    }
+    if (portalQueueStatusFilter) {
+      portalQueueStatusFilter.addEventListener('change', function () {
+        portalStatusFilter = portalQueueStatusFilter.value;
+        renderHistoryList();
+      });
+    }
+    if (portalQueueCategoryFilter) {
+      portalQueueCategoryFilter.addEventListener('change', function () {
+        portalCategoryFilter = portalQueueCategoryFilter.value;
+        renderHistoryList();
+      });
+    }
+    if (portalQueueClearFilters) {
+      portalQueueClearFilters.addEventListener('click', function () {
+        portalSearchQuery = ''; portalStatusFilter = ''; portalCategoryFilter = '';
+        if (portalQueueSearchInput) portalQueueSearchInput.value = '';
+        if (portalQueueStatusFilter) portalQueueStatusFilter.value = '';
+        if (portalQueueCategoryFilter) portalQueueCategoryFilter.value = '';
+        renderHistoryList();
+      });
+    }
+
+    if (!latest) {
+      dash.style.display = 'none';
+      var empty = document.getElementById('portalEmpty');
+      if (empty) empty.style.display = 'block';
+    } else {
+      showTicketDetails(latest);
+    }
+    renderHistoryList();
 
     // ---- FR-4: live notifications on status change ----
     // Status changes happen on the agent dashboard (a different tab/window),

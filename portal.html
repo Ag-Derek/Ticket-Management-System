@@ -127,6 +127,30 @@
       <div class="card-panel wide ticket-history" id="ticketHistory" style="display:none;">
         <h3>Your tickets</h3>
         <p class="lead" style="margin:0 0 16px;font-size:12.5px;">Click a ticket to view its full details above.</p>
+        <div class="queue-search-row" id="portalQueueSearchRow">
+          <div class="field search-field" style="margin-bottom:0;">
+            <input type="text" id="portalQueueSearchInput" class="queue-search-input" placeholder="Search by ticket #, subject, or category">
+          </div>
+          <select id="portalQueueStatusFilter" class="queue-filter-select" aria-label="Filter by status">
+            <option value="">Any status</option>
+            <option>Created</option>
+            <option>Assigned</option>
+            <option>In Progress</option>
+            <option>Waiting</option>
+            <option>Escalated</option>
+            <option>Resolved</option>
+            <option>Reopened</option>
+            <option>Closed</option>
+          </select>
+          <select id="portalQueueCategoryFilter" class="queue-filter-select" aria-label="Filter by category">
+            <option value="">Any category</option>
+            <option>Network</option>
+            <option>Application</option>
+            <option>Hardware</option>
+            <option>Access &amp; Identity</option>
+          </select>
+          <button class="queue-clear-btn" id="portalQueueClearFilters" type="button">Clear</button>
+        </div>
         <div class="history-list" id="historyList"></div>
       </div>
     </div>
