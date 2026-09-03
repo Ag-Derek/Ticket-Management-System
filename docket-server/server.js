@@ -25,6 +25,6 @@ app.use('/api/tickets', require('./routes/tickets'));
 app.use('/api/tickets/:ticketId/comments', require('./routes/comments'));
 
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`Docket API listening on http://localhost:${PORT}`);
 });
