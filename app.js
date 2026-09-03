@@ -947,9 +947,15 @@ document.addEventListener('DOMContentLoaded', function () {
       escalatePanel.style.display = 'none';
       if (resolvePanel) resolvePanel.style.display = 'none';
       reassignSelect.innerHTML = '';
+      var unassignedOpt = document.createElement('option');
+      unassignedOpt.value = '';
+      unassignedOpt.textContent = 'Unassigned';
+      if (!t.assignedAgent) unassignedOpt.selected = true;
+      reassignSelect.appendChild(unassignedOpt);
       AGENT_ROSTER.filter(function (name) { return name !== agent.name; }).forEach(function (name) {
         var opt = document.createElement('option');
         opt.value = name; opt.textContent = name;
+        if (name === t.assignedAgent) opt.selected = true;
         reassignSelect.appendChild(opt);
       });
       reassignNote.value = '';
@@ -990,15 +996,23 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('reassignConfirmBtn').addEventListener('click', function () {
       var t = tickets.filter(function (x) { return x.id === selectedId; })[0];
       if (!t || !canReassign(t)) { closePanels(); return; }
-      var to = reassignSelect.value;
-      if (!to) return;
+      var to = reassignSelect.value; // '' means the Unassigned option was picked
+      if (to === (t.assignedAgent || '')) { closePanels(); return; }
       var wasUnassigned = !t.assignedAgent;
       var from = t.assignedAgent || 'Unassigned';
-      t.assignedAgent = to;
-      if (wasUnassigned && t.status === 'Created') t.status = 'Assigned';
+      t.assignedAgent = to || null;
+      if (to) {
+        if (wasUnassigned && t.status === 'Created') t.status = 'Assigned';
+      } else if (t.status !== 'Resolved' && t.status !== 'Closed') {
+        // Sending it back to the pool — reset to Created so the status machine's
+        // assumption (Assigned+ always has an owner) still holds.
+        t.status = 'Created';
+      }
       persistTickets();
       var note = reassignNote.value.trim();
-      var noteText = wasUnassigned ? 'Assigned to ' + to : 'Reassigned from ' + from + ' to ' + to;
+      var noteText = to
+        ? (wasUnassigned ? 'Assigned to ' + to : 'Reassigned from ' + from + ' to ' + to)
+        : 'Unassigned (was ' + from + ')';
       addInternalNote(t.id, noteText + (note ? ' — ' + note : '.'));
       closePanels();
       renderStats(); renderDetail(); renderList();
@@ -1604,6 +1618,11 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function openAdminAssignPanel(t) {
       adminAssignSelect.innerHTML = '';
+      var unassignedOpt = document.createElement('option');
+      unassignedOpt.value = '';
+      unassignedOpt.textContent = 'Unassigned';
+      if (!t.assignedAgent) unassignedOpt.selected = true;
+      adminAssignSelect.appendChild(unassignedOpt);
       loadAgents().forEach(function (a) {
         var opt = document.createElement('option');
         opt.value = a.name; opt.textContent = a.name;
@@ -1625,15 +1644,23 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('adminAssignConfirmBtn').addEventListener('click', function () {
       var t = adminTickets.filter(function (x) { return x.id === adminSelectedId; })[0];
       if (!t) return;
-      var to = adminAssignSelect.value;
-      if (!to) return;
+      var to = adminAssignSelect.value; // '' means the Unassigned option was picked
+      if (to === (t.assignedAgent || '')) { closeAdminAssignPanel(); return; }
       var from = t.assignedAgent || 'Unassigned';
-      if (from === to) { closeAdminAssignPanel(); return; }
-      t.assignedAgent = to;
-      if (t.status === 'Created') t.status = 'Assigned';
+      t.assignedAgent = to || null;
+      if (to) {
+        if (t.status === 'Created') t.status = 'Assigned';
+      } else if (t.status !== 'Resolved' && t.status !== 'Closed') {
+        // Sending it back to the pool — reset to Created so the status machine's
+        // assumption (Assigned+ always has an owner) still holds.
+        t.status = 'Created';
+      }
       persistAdminTickets();
       var note = adminAssignNote.value.trim();
-      addAdminNote(t.id, (from === 'Unassigned' ? 'Assigned to ' + to : 'Reassigned from ' + from + ' to ' + to) + ' by an admin' + (note ? ' — ' + note : '.'));
+      var noteText = to
+        ? (from === 'Unassigned' ? 'Assigned to ' + to : 'Reassigned from ' + from + ' to ' + to)
+        : 'Unassigned (was ' + from + ')';
+      addAdminNote(t.id, noteText + ' by an admin' + (note ? ' — ' + note : '.'));
       closeAdminAssignPanel();
       renderAdminStats(); renderAdminDetail(); renderAdminList();
     });
