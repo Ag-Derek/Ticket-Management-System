@@ -30,6 +30,20 @@ document.addEventListener('DOMContentLoaded', function () {
     return prefix + '-2026-' + String(Date.now()).slice(-6);
   }
 
+  // Renders a read-only row of "📎 filename" chips (used for the attachments a
+  // ticket was filed with, on the portal/agent/admin dashboards). No-op if the
+  // container isn't on this page, or there's nothing to show.
+  function renderAttachmentChips(container, names) {
+    if (!container) return;
+    container.innerHTML = '';
+    (names || []).forEach(function (name) {
+      var chip = document.createElement('span');
+      chip.className = 'chat-attachment-chip';
+      chip.textContent = '📎 ' + name;
+      container.appendChild(chip);
+    });
+  }
+
   // Profile form validation + confirmation stub
   var profileForm = document.getElementById('profileForm');
   if (profileForm) {
@@ -341,6 +355,7 @@ document.addEventListener('DOMContentLoaded', function () {
           team: team,
           sla: sla.response + ' response / ' + sla.resolution + ' resolution',
           files: files.length,
+          attachments: files.slice(),
           email: (user && user.email) ? user.email : 'your inbox',
           status: 'Created',
           assignedAgent: null,
@@ -438,6 +453,16 @@ document.addEventListener('DOMContentLoaded', function () {
       document.getElementById('dashFiles').textContent = t.files ? t.files + ' attached' : 'None';
       document.getElementById('dashEmail').textContent = t.email;
       document.getElementById('dashAgent').textContent = t.assignedAgent || 'Unassigned';
+
+      var dashAttBlock = document.getElementById('dashAttachmentsBlock');
+      if (dashAttBlock) {
+        if (t.attachments && t.attachments.length) {
+          renderAttachmentChips(document.getElementById('dashAttachmentsList'), t.attachments);
+          dashAttBlock.style.display = '';
+        } else {
+          dashAttBlock.style.display = 'none';
+        }
+      }
 
       var serviceBox = document.getElementById('dashServiceBox');
       if (serviceBox) {
@@ -1145,6 +1170,16 @@ document.addEventListener('DOMContentLoaded', function () {
       document.getElementById('dashEmail').textContent = t.email;
       document.getElementById('dashAgent').textContent = t.assignedAgent || 'Unassigned';
 
+      var dashAttBlock = document.getElementById('dashAttachmentsBlock');
+      if (dashAttBlock) {
+        if (t.attachments && t.attachments.length) {
+          renderAttachmentChips(document.getElementById('dashAttachmentsList'), t.attachments);
+          dashAttBlock.style.display = '';
+        } else {
+          dashAttBlock.style.display = 'none';
+        }
+      }
+
       var serviceBox = document.getElementById('dashServiceBox');
       if (serviceBox) {
         if (t.service) {
@@ -1787,6 +1822,16 @@ document.addEventListener('DOMContentLoaded', function () {
       document.getElementById('adminDashFiles').textContent = t.files ? t.files + ' attached' : 'None';
       document.getElementById('adminDashEmail').textContent = t.email;
       document.getElementById('adminDashAgent').textContent = t.assignedAgent || 'Unassigned';
+
+      var adminAttBlock = document.getElementById('adminDashAttachmentsBlock');
+      if (adminAttBlock) {
+        if (t.attachments && t.attachments.length) {
+          renderAttachmentChips(document.getElementById('adminDashAttachmentsList'), t.attachments);
+          adminAttBlock.style.display = '';
+        } else {
+          adminAttBlock.style.display = 'none';
+        }
+      }
 
       var badge = document.getElementById('adminDashStatusBadge');
       badge.textContent = t.status;
