@@ -88,9 +88,29 @@ document.addEventListener('DOMContentLoaded', function () {
       document.getElementById('org').value = '';
     });
 
-    document.getElementById('submitProfile').addEventListener('click', function () {
+    var submitProfileBtn = document.getElementById('submitProfile');
+    var submitProfileDefaultLabel = submitProfileBtn ? submitProfileBtn.textContent : '';
+
+    // Surfaces a submission-time error near the email field (reusing the
+    // f-email/err-email pattern used elsewhere, e.g. admin-login), falling
+    // back to alert() if this page doesn't have an err-email element.
+    function showProfileError(message) {
+      var emailWrap = document.getElementById('f-email');
+      var emailErr = document.getElementById('err-email');
+      if (emailWrap) emailWrap.classList.add('invalid');
+      if (emailErr) {
+        emailErr.textContent = message;
+      } else {
+        alert(message);
+      }
+    }
+
+    submitProfileBtn.addEventListener('click', function () {
       var name = document.getElementById('fullName');
       var email = document.getElementById('email');
+      var phone = document.getElementById('phone');
+      var dept = document.getElementById('dept');
+      var org = document.getElementById('org');
       var valid = true;
 
       if (!name.value.trim()) {
@@ -110,12 +130,51 @@ document.addEventListener('DOMContentLoaded', function () {
 
       if (!valid) return;
 
-      var id = genUniqueId('USR', []);
-      var newUser = { id: id, name: name.value.trim(), email: email.value.trim() };
-      showProfileStub(newUser, false);
+      submitProfileBtn.disabled = true;
+      submitProfileBtn.textContent = 'Saving…';
 
-      // Hand the profile off to the ticket page (stands in for a real DB lookup by user id)
-      localStorage.setItem('docketUser', JSON.stringify(newUser));
+      fetch(API_BASE + '/api/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          full_name: name.value.trim(),
+          email: email.value.trim(),
+          phone: phone && phone.value.trim() ? phone.value.trim() : null,
+          department: dept && dept.value.trim() ? dept.value.trim() : null,
+          organization: org && org.value.trim() ? org.value.trim() : null
+        })
+      })
+        .then(function (response) {
+          return response.json().then(function (data) {
+            if (!response.ok) throw new Error(data.error || 'Unable to save your profile.');
+            return data;
+          });
+        })
+        .then(function (data) {
+          // Normalize the API's `full_name` into the `name` field the rest
+          // of app.js (ticket creation, portal, chat) already reads.
+          var newUser = {
+            id: data.id,
+            name: data.full_name,
+            email: data.email,
+            phone: data.phone,
+            department: data.department,
+            organization: data.organization
+          };
+          document.getElementById('f-email').classList.remove('invalid');
+          showProfileStub(newUser, data.returning === true);
+          // Hand the profile off to the ticket page — the Render/SQLite
+          // record is now the source of truth; this is just a session cache.
+          localStorage.setItem('docketUser', JSON.stringify(newUser));
+        })
+        .catch(function (err) {
+          console.error('Profile creation error:', err);
+          showProfileError(err.message || 'Something went wrong. Please try again.');
+        })
+        .finally(function () {
+          submitProfileBtn.disabled = false;
+          submitProfileBtn.textContent = submitProfileDefaultLabel;
+        });
     });
   }
 
