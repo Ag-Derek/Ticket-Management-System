@@ -217,6 +217,154 @@ document.addEventListener('DOMContentLoaded', function () {
       });
   }
 
+  // ---- Ticket data access (phase 1D-i) ----
+  // Tickets now come from the API instead of the `docketTickets` localStorage
+  // array. Server rows are snake_case and reference the requester/assignee by
+  // id, while every render function in this file was written against the old
+  // client-side shape — normalizeTicket() bridges the two, so nothing
+  // downstream of it needed rewriting.
+  //
+  // Three things the API doesn't return yet, each noted at its use site below:
+  //   - creation-time attachment filenames (only attachment_count comes back)
+  //   - the requester's email (only user_id) — hence the user cache here
+  //   - who escalated / who resolved (only the target and the text)
+  var userEmailCache = {};
+
+  function refreshUserEmails(onDone) {
+    fetch(API_BASE + '/api/users')
+      .then(function (r) { return r.ok ? r.json() : []; })
+      .then(function (users) {
+        users.forEach(function (u) { userEmailCache[u.id] = u.email; });
+        if (onDone) onDone();
+      })
+      .catch(function (err) {
+        console.error('User directory load error:', err);
+        if (onDone) onDone();
+      });
+  }
+
+  // normalizeTicket() reads both the agent and user caches, so they have to be
+  // warm before any ticket is mapped. Either directory failing is non-fatal —
+  // tickets still render, just with an id where a name or email would be — so
+  // both paths continue through to the callback.
+  function withDirectories(onReady) {
+    refreshAgentDirectory(
+      function () { refreshUserEmails(onReady); },
+      function () { refreshUserEmails(onReady); }
+    );
+  }
+
+  function agentNameForId(id) {
+    if (!id) return null;
+    var match = loadAgents().filter(function (a) { return a.id === id; })[0];
+    return match ? match.name : id;
+  }
+
+  function normalizeTicket(row) {
+    return {
+      id: row.id,
+      subject: row.subject,
+      description: row.description,
+      category: row.category,
+      priority: row.priority,
+      service: row.affected_service || '',
+      team: row.assigned_team,
+      sla: row.sla_summary,
+      files: row.attachment_count || 0,
+      // Only the count comes back from the API, not the filenames, so the
+      // attachment *chips* stay hidden even when the count is non-zero. The
+      // `Array.isArray` check means they light up on their own if tickets.js
+      // later starts returning an `attachments` array.
+      attachments: Array.isArray(row.attachments) ? row.attachments : [],
+      userId: row.user_id,
+      email: userEmailCache[row.user_id] || row.user_id,
+      status: row.status,
+      assignedAgentId: row.assigned_agent_id || null,
+      assignedAgent: agentNameForId(row.assigned_agent_id),
+      createdAt: row.created_at,
+      // `by` is blank because the API records what was written, not who wrote
+      // it; the render sites below omit the attribution when it's empty.
+      resolutionSummary: row.resolution_summary ? { text: row.resolution_summary, by: '' } : null,
+      escalation: row.escalated_to ? { to: row.escalated_to, reason: row.escalation_reason || '', by: '' } : null,
+      csat: row.csat_rating != null ? { score: row.csat_rating, comment: row.csat_comment || '' } : null
+    };
+  }
+
+  // PATCH /api/tickets/:id/assign — pass a falsy agentId to send the ticket
+  // back to the pool. The server owns the status side-effects here (claiming a
+  // Created ticket makes it Assigned; unassigning anything that isn't
+  // Resolved/Closed drops it back to Created), so the handlers below no longer
+  // repeat that logic client-side — they render whatever comes back.
+  function assignTicket(ticketId, agentId, onDone, onError) {
+    fetch(API_BASE + '/api/tickets/' + encodeURIComponent(ticketId) + '/assign', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assigned_agent_id: agentId || null })
+    })
+      .then(function (response) {
+        return response.json().then(function (data) {
+          if (!response.ok) throw new Error(data.error || 'Unable to update the assignment.');
+          return data;
+        });
+      })
+      .then(function (row) { onDone(normalizeTicket(row)); })
+      .catch(function (err) {
+        console.error('Assign error:', err);
+        if (onError) onError(err);
+      });
+  }
+
+  // Swap a server-updated ticket into an in-memory list, in place.
+  function replaceTicketIn(list, updated) {
+    var idx = list.findIndex(function (x) { return x.id === updated.id; });
+    if (idx !== -1) list[idx] = updated;
+    return list;
+  }
+
+  // The inline assign/reassign panels only had field-level `.err` slots, with
+  // nothing for a failed request, so the error element is created on first use.
+  function showPanelError(panel, message) {
+    if (!panel) return;
+    var box = panel.querySelector('.panel-error');
+    if (!box) {
+      box = document.createElement('p');
+      box.className = 'err panel-error';
+      box.style.display = 'block';
+      box.style.marginBottom = '12px';
+      panel.insertBefore(box, panel.firstChild);
+    }
+    box.textContent = message;
+  }
+
+  function clearPanelError(panel) {
+    if (!panel) return;
+    var box = panel.querySelector('.panel-error');
+    if (box) box.remove();
+  }
+
+  // GET /api/tickets, optionally filtered — e.g. { user_id: 'USR-000001' } for
+  // the customer portal, or no filter at all for the agent/admin queues.
+  function fetchTickets(query, onDone, onError) {
+    var qs = '';
+    if (query) {
+      var parts = [];
+      Object.keys(query).forEach(function (k) {
+        if (query[k]) parts.push(encodeURIComponent(k) + '=' + encodeURIComponent(query[k]));
+      });
+      if (parts.length) qs = '?' + parts.join('&');
+    }
+    fetch(API_BASE + '/api/tickets' + qs)
+      .then(function (response) {
+        if (!response.ok) throw new Error('Unable to load tickets.');
+        return response.json();
+      })
+      .then(function (rows) { onDone(rows.map(normalizeTicket)); })
+      .catch(function (err) {
+        console.error('Ticket load error:', err);
+        if (onError) onError(err);
+      });
+  }
+
   // Agent self-sign-in (agent-login.html): the backend's find-or-create-by-email
   // behavior on POST /api/agents mirrors the app's existing "any password works"
   // demo design — there's no agent password on the backend to verify against, so
@@ -408,19 +556,9 @@ document.addEventListener('DOMContentLoaded', function () {
       });
     }
 
-    var teams = ['Network Support', 'Application Support', 'Infrastructure', 'Access & Identity'];
-    var teamByCategory = {
-      'Network': 'Network Support',
-      'Application': 'Application Support',
-      'Hardware': 'Infrastructure',
-      'Access & Identity': 'Access & Identity'
-    };
-    var slaByPriority = {
-      Critical: { response: '15 min', resolution: '4 hrs' },
-      High: { response: '30 min', resolution: '8 hrs' },
-      Medium: { response: '4 hrs', resolution: '2 days' },
-      Low: { response: '1 day', resolution: '5 days' }
-    };
+    // The category -> team and priority -> SLA tables used to live here and
+    // are now owned by the server (see TEAM_BY_CATEGORY / SLA_BY_PRIORITY in
+    // routes/tickets.js), so the client no longer keeps its own copies.
 
     document.getElementById('submitTicket').addEventListener('click', function () {
       var subject = document.getElementById('subject');
@@ -449,39 +587,68 @@ document.addEventListener('DOMContentLoaded', function () {
         setTimeout(function () { s.classList.add('active'); }, delays[i] || i * 500);
       });
 
-      var team = teamByCategory[category.value] || teams[Math.floor(Math.random() * teams.length)];
-      var sla = slaByPriority[priority.value] || slaByPriority.Medium;
+      // The POST fires immediately and the pipeline animation runs alongside
+      // it; the redirect waits for whichever finishes last, so the row really
+      // exists in the database before portal.html tries to read it back.
+      var animationDone = false;
+      var createdTicket = null;
 
-      setTimeout(function () {
-        var existingTickets = [];
-        try { existingTickets = JSON.parse(localStorage.getItem('docketTickets')) || []; } catch (e) { existingTickets = []; }
-        var ticketId = genUniqueId('TKT', existingTickets.map(function (t) { return t.id; }));
+      function maybeGoToPortal() {
+        if (!animationDone || !createdTicket) return;
+        // The portal used to be handed a whole ticket object through
+        // `docketLatestTicket`; now it only needs to know which of the
+        // tickets it fetches should open as the headline card.
+        localStorage.setItem('docketLatestTicketId', createdTicket.id);
+        window.location.href = 'portal.html';
+      }
 
-        var ticket = {
-          id: ticketId,
+      // ticket.html has no error slot of its own — the form only had per-field
+      // `.err` messages — so on failure we drop back to the form and put a
+      // message above it rather than leaving the user on a stalled pipeline.
+      function showSubmitError(message) {
+        pipeline.classList.remove('show');
+        ticketForm.style.display = '';
+        var box = document.getElementById('ticketSubmitError');
+        if (!box) {
+          box = document.createElement('p');
+          box.id = 'ticketSubmitError';
+          box.className = 'err';
+          box.style.display = 'block';
+          box.style.marginBottom = '16px';
+          ticketForm.insertBefore(box, document.getElementById('f-subject'));
+        }
+        box.textContent = message;
+      }
+
+      setTimeout(function () { animationDone = true; maybeGoToPortal(); }, 2600);
+
+      fetch(API_BASE + '/api/tickets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: user ? user.id : null,
           subject: subject.value.trim(),
           description: description.value.trim(),
           category: category.value,
           priority: priority.value,
-          service: service ? service.value.trim() : '',
-          team: team,
-          sla: sla.response + ' response / ' + sla.resolution + ' resolution',
-          files: files.length,
-          attachments: files.slice(),
-          email: (user && user.email) ? user.email : 'your inbox',
-          status: 'Created',
-          assignedAgent: null,
-          createdAt: new Date().toISOString()
-        };
-
-        // Save as the latest ticket (for the portal's headline card)…
-        localStorage.setItem('docketLatestTicket', JSON.stringify(ticket));
-        // …and append it to the full history list.
-        existingTickets.unshift(ticket);
-        localStorage.setItem('docketTickets', JSON.stringify(existingTickets));
-
-        window.location.href = 'portal.html';
-      }, 2600);
+          affected_service: service && service.value.trim() ? service.value.trim() : null,
+          attachments: files.slice()
+        })
+      })
+        .then(function (response) {
+          return response.json().then(function (data) {
+            if (!response.ok) throw new Error(data.error || 'Unable to create the ticket.');
+            return data;
+          });
+        })
+        .then(function (data) {
+          createdTicket = data;
+          maybeGoToPortal();
+        })
+        .catch(function (err) {
+          console.error('Ticket create error:', err);
+          showSubmitError(err.message || 'Unable to create the ticket. Please try again.');
+        });
     });
   }
 
@@ -491,28 +658,19 @@ document.addEventListener('DOMContentLoaded', function () {
     var portalUser = null;
     try { portalUser = JSON.parse(localStorage.getItem('docketUser')); } catch (e) { portalUser = null; }
 
+    // Both of these start empty and are filled by the fetch at the bottom of
+    // this block. `latestTicketId` is all ticket.html hands over now — the
+    // ticket itself is read back from the API rather than passed through
+    // localStorage.
+    var latestTicketId = localStorage.getItem('docketLatestTicketId');
     var latest = null;
-    try { latest = JSON.parse(localStorage.getItem('docketLatestTicket')); } catch (e) { latest = null; }
-
     var all = [];
-    try { all = JSON.parse(localStorage.getItem('docketTickets')) || []; } catch (e) { all = []; }
-    // Backfill status/assignment for tickets created before these fields existed
-    all = all.map(function (t) {
-      if (!t.status) t.status = 'Created';
-      if (t.assignedAgent === undefined) t.assignedAgent = null;
-      return t;
-    });
-    if (latest) {
-      var latestMatch = all.filter(function (t) { return t.id === latest.id; })[0];
-      if (latestMatch) latest = latestMatch;
-    }
 
     // Snapshot of each ticket's status as this tab currently knows it, so a
     // change made elsewhere (an agent updating status on their dashboard, or
     // this same customer with the portal open in a second tab) can be told
     // apart from a status this tab already displayed.
     var knownStatuses = {};
-    all.forEach(function (t) { knownStatuses[t.id] = t.status; });
 
     function portalStatusClass(status) {
       if (status === 'Resolved') return 'status-resolved';
@@ -524,16 +682,14 @@ document.addEventListener('DOMContentLoaded', function () {
       return '';
     }
 
-    // Writes a status change back to the shared ticket store (docketTickets + docketLatestTicket)
-    // and keeps this page's in-memory copies (`all`, `latest`) in sync.
+    // Phase 1D-i moved reads to the API; the matching write endpoints land in
+    // 1D-iii (confirm fix / reopen) and 1D-iv (CSAT). Until then this keeps the
+    // page's in-memory copies in sync so the UI still updates on click, but the
+    // change is NOT persisted anywhere and will not survive a reload.
     function persistPortalTicket(t) {
       var idx = all.findIndex(function (x) { return x.id === t.id; });
       if (idx !== -1) all[idx] = t;
-      localStorage.setItem('docketTickets', JSON.stringify(all));
-      if (latest && latest.id === t.id) {
-        latest = t;
-        localStorage.setItem('docketLatestTicket', JSON.stringify(t));
-      }
+      if (latest && latest.id === t.id) latest = t;
     }
 
     // Profile sidebar
@@ -545,7 +701,8 @@ document.addEventListener('DOMContentLoaded', function () {
         document.getElementById('profileName').textContent = portalUser.name;
         document.getElementById('profileId').textContent = portalUser.id;
         document.getElementById('profileEmail').textContent = portalUser.email;
-        document.getElementById('profileTicketCount').textContent = all.length;
+        // Filled in once the fetch below resolves.
+        document.getElementById('profileTicketCount').textContent = '—';
       } else {
         profileSidebar.style.display = 'none';
       }
@@ -815,14 +972,37 @@ document.addEventListener('DOMContentLoaded', function () {
       });
     }
 
-    if (!latest) {
-      dash.style.display = 'none';
+    // Renders whatever `all` currently holds. Called once the initial fetch
+    // resolves (and on failure, which lands on the empty state).
+    function bootstrapPortal() {
       var empty = document.getElementById('portalEmpty');
-      if (empty) empty.style.display = 'block';
-    } else {
+      if (!all.length) {
+        dash.style.display = 'none';
+        if (empty) empty.style.display = 'block';
+        renderHistoryList();
+        return;
+      }
+      if (empty) empty.style.display = 'none';
+      dash.style.display = '';
+      // Prefer the ticket just created; otherwise the newest, since the API
+      // already returns them ordered by created_at DESC.
+      latest = all.filter(function (t) { return t.id === latestTicketId; })[0] || all[0];
       showTicketDetails(latest);
+      renderHistoryList();
     }
-    renderHistoryList();
+
+    withDirectories(function () {
+      if (!portalUser || !portalUser.id) { bootstrapPortal(); return; }
+      fetchTickets({ user_id: portalUser.id }, function (rows) {
+        all = rows;
+        all.forEach(function (t) { knownStatuses[t.id] = t.status; });
+        var countEl = document.getElementById('profileTicketCount');
+        if (countEl) countEl.textContent = all.length;
+        bootstrapPortal();
+      }, function () {
+        bootstrapPortal();
+      });
+    });
 
     // ---- FR-4: live notifications on status change ----
     // Status changes happen on the agent dashboard (a different tab/window),
@@ -860,17 +1040,11 @@ document.addEventListener('DOMContentLoaded', function () {
       badge.classList.add('pulse');
     }
 
-    // Parses the latest `docketTickets` value, diffs it against what this tab
-    // last knew, refreshes the dashboard/history in place, and toasts every
-    // ticket whose status actually moved.
-    function applyRemoteTicketUpdate(raw) {
-      if (!raw) return;
-      var updated;
-      try { updated = JSON.parse(raw) || []; } catch (err) { return; }
-      updated.forEach(function (t) {
-        if (!t.status) t.status = 'Created';
-        if (t.assignedAgent === undefined) t.assignedAgent = null;
-      });
+    // Takes a freshly fetched (already normalized) ticket list, diffs it
+    // against what this tab last knew, refreshes the dashboard/history in
+    // place, and toasts every ticket whose status actually moved.
+    function applyRemoteTicketUpdate(updated) {
+      if (!updated || !updated.length) return;
 
       var changedList = [];
       updated.forEach(function (t) {
@@ -901,18 +1075,14 @@ document.addEventListener('DOMContentLoaded', function () {
       });
     }
 
-    // `storage` only fires in *other* tabs/windows of this origin — exactly
-    // what's needed here, since it means this tab's own writes (confirm fix,
-    // reopen, CSAT) never re-trigger a toast about themselves.
-    window.addEventListener('storage', function (e) {
-      if (e.key === 'docketTickets') applyRemoteTicketUpdate(e.newValue);
-    });
-
-    // Light polling fallback in case the storage event doesn't reach this tab
-    // (some embedded/preview contexts don't relay it) — harmless either way,
-    // since applyRemoteTicketUpdate is a no-op once knownStatuses is caught up.
+    // The `storage` listener that used to drive this is gone: tickets no longer
+    // live in localStorage, so that event will never fire for them again. The
+    // poll that was previously just a fallback is now the sole live-update
+    // path — it refetches this user's tickets and feeds the same diff logic,
+    // which stays a no-op until a status actually moves.
     setInterval(function () {
-      applyRemoteTicketUpdate(localStorage.getItem('docketTickets'));
+      if (!portalUser || !portalUser.id) return;
+      fetchTickets({ user_id: portalUser.id }, applyRemoteTicketUpdate);
     }, 4000);
   }
 
@@ -940,36 +1110,25 @@ document.addEventListener('DOMContentLoaded', function () {
       window.location.href = 'agent-login.html';
     });
 
-    // Load tickets submitted via the customer portal; backfill status/assignment on older records
+    // Tickets are fetched from the API at the bottom of this block; the old
+    // localStorage read (and the backfill defaults it needed for records
+    // predating the status/assignment fields) is gone, since every row now
+    // comes out of the database with those columns already populated.
     var tickets = [];
-    try { tickets = JSON.parse(localStorage.getItem('docketTickets')) || []; } catch (e) { tickets = []; }
-    tickets = tickets.map(function (t) {
-      if (!t.status) t.status = 'Assigned';
-      if (t.assignedAgent === undefined) t.assignedAgent = null;
-      if (!t.createdAt) t.createdAt = new Date().toISOString();
-      return t;
-    });
 
-    function persistTickets() {
-      localStorage.setItem('docketTickets', JSON.stringify(tickets));
-      // Keep the customer portal's headline card in sync if it's showing one of these tickets
-      var latest = null;
-      try { latest = JSON.parse(localStorage.getItem('docketLatestTicket')); } catch (e) { latest = null; }
-      if (latest) {
-        var match = tickets.filter(function (t) { return t.id === latest.id; })[0];
-        if (match) localStorage.setItem('docketLatestTicket', JSON.stringify(match));
-      }
-    }
-    // Save any status/assignedAgent/createdAt defaults backfilled above so they
-    // stay stable across reloads instead of being recomputed (and drifting) each time.
-    persistTickets();
+    // Was: write the whole array back to `docketTickets`. Assignment now goes
+    // through PATCH /api/tickets/:id/assign (1D-ii); the remaining callers are
+    // the status moves, which land in 1D-iii. Until then those still mutate
+    // their in-memory ticket and re-render, so the queue updates on screen but
+    // the change is NOT saved and won't survive a reload.
+    function persistTickets() { /* no-op until 1D-iii */ }
 
     var currentFilter = 'All';
     var searchQuery = '';
     var statusFilter = '';
     var categoryFilter = '';
     var dateFilter = '';
-    var selectedId = tickets.length ? tickets[0].id : null;
+    var selectedId = null; // set once the fetch below resolves
 
     function statusClass(status) {
       if (status === 'Resolved') return 'status-resolved';
@@ -1034,7 +1193,9 @@ document.addEventListener('DOMContentLoaded', function () {
     // of live controls — "Assign to me" (or the owner's "Reassign…") is the
     // only way in.
     function isMine(t) {
-      return !!t.assignedAgent && t.assignedAgent === agent.name;
+      // Compared by id rather than name now that the API supplies one — two
+      // agents sharing a display name would otherwise both "own" the ticket.
+      return !!t.assignedAgentId && t.assignedAgentId === agent.id;
     }
 
     // Handing a ticket to a specific agent is allowed either as a genuine
@@ -1046,7 +1207,7 @@ document.addEventListener('DOMContentLoaded', function () {
       // confirm-fix/reopen decision — swapping the owning agent mid-confirmation
       // doesn't make sense, so it's locked the same as Closed.
       if (t.status === 'Closed' || t.status === 'Resolved') return false;
-      return isMine(t) || !t.assignedAgent;
+      return isMine(t) || !t.assignedAgentId;
     }
 
     function renderStatusActions(t) {
@@ -1090,15 +1251,12 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     // ---- Reassign / escalate ----
-    // Pulled from the shared agent directory (now GET /api/agents), so an agent
-    // added from the admin console shows up here without any change to this file.
-    // AGENT_ROSTER starts empty and fills in once the fetch resolves; that's fine
-    // in practice since openReassignPanel() only runs later, in response to a
-    // click, by which point the directory has long since loaded.
-    var AGENT_ROSTER = [];
-    refreshAgentDirectory(function (agents) {
-      AGENT_ROSTER = agents.map(function (a) { return a.name; });
-    });
+    // The reassign select is built from the shared agent directory (GET
+    // /api/agents) at open time, so an agent added from the admin console shows
+    // up here with no change to this file. It replaced AGENT_ROSTER, a
+    // names-only copy with its own fetch — PATCH /assign takes an agent id, so
+    // the select needs the full record. The directory has long since loaded by
+    // the time a click opens the panel.
     var ESCALATION_TARGETS = ['Tier 2 Support', 'Team Lead', 'Engineering', 'Network Operations Center'];
 
     function formatNoteTime(d) {
@@ -1144,13 +1302,16 @@ document.addEventListener('DOMContentLoaded', function () {
       unassignedOpt.textContent = 'Unassigned';
       if (!t.assignedAgent) unassignedOpt.selected = true;
       reassignSelect.appendChild(unassignedOpt);
-      AGENT_ROSTER.filter(function (name) { return name !== agent.name; }).forEach(function (name) {
+      // Option values are agent ids — that's what PATCH /assign takes — with
+      // the name shown as the label.
+      loadAgents().filter(function (a) { return a.id !== agent.id; }).forEach(function (a) {
         var opt = document.createElement('option');
-        opt.value = name; opt.textContent = name;
-        if (name === t.assignedAgent) opt.selected = true;
+        opt.value = a.id; opt.textContent = a.name;
+        if (a.id === t.assignedAgentId) opt.selected = true;
         reassignSelect.appendChild(opt);
       });
       reassignNote.value = '';
+      clearPanelError(reassignPanel);
       var prompt = document.getElementById('reassignPrompt');
       if (prompt) prompt.textContent = t.assignedAgent ? 'Hand this ticket to another agent' : 'Assign this unclaimed ticket to an agent';
       reassignPanel.style.display = 'block';
@@ -1188,26 +1349,34 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('reassignConfirmBtn').addEventListener('click', function () {
       var t = tickets.filter(function (x) { return x.id === selectedId; })[0];
       if (!t || !canReassign(t)) { closePanels(); return; }
-      var to = reassignSelect.value; // '' means the Unassigned option was picked
-      if (to === (t.assignedAgent || '')) { closePanels(); return; }
-      var wasUnassigned = !t.assignedAgent;
+      var toId = reassignSelect.value; // '' means the Unassigned option was picked
+      if (toId === (t.assignedAgentId || '')) { closePanels(); return; }
+
+      // Captured before the request so the note reads correctly regardless of
+      // what the server hands back.
+      var wasUnassigned = !t.assignedAgentId;
       var from = t.assignedAgent || 'Unassigned';
-      t.assignedAgent = to || null;
-      if (to) {
-        if (wasUnassigned && t.status === 'Created') t.status = 'Assigned';
-      } else if (t.status !== 'Resolved' && t.status !== 'Closed') {
-        // Sending it back to the pool — reset to Created so the status machine's
-        // assumption (Assigned+ always has an owner) still holds.
-        t.status = 'Created';
-      }
-      persistTickets();
+      var toName = toId ? agentNameForId(toId) : null;
       var note = reassignNote.value.trim();
-      var noteText = to
-        ? (wasUnassigned ? 'Assigned to ' + to : 'Reassigned from ' + from + ' to ' + to)
-        : 'Unassigned (was ' + from + ')';
-      addInternalNote(t.id, noteText + (note ? ' — ' + note : '.'));
-      closePanels();
-      renderStats(); renderDetail(); renderList();
+      var confirmBtn = document.getElementById('reassignConfirmBtn');
+
+      clearPanelError(reassignPanel);
+      confirmBtn.disabled = true;
+      assignTicket(t.id, toId, function (updated) {
+        confirmBtn.disabled = false;
+        replaceTicketIn(tickets, updated);
+        agentKnownSignature[updated.id] = updated.status + '|' + (updated.assignedAgent || '');
+        var noteText = toName
+          ? (wasUnassigned ? 'Assigned to ' + toName : 'Reassigned from ' + from + ' to ' + toName)
+          : 'Unassigned (was ' + from + ')';
+        // Still a localStorage internal note until 1D-v moves comments.
+        addInternalNote(updated.id, noteText + (note ? ' — ' + note : '.'));
+        closePanels();
+        renderStats(); renderDetail(); renderList();
+      }, function (err) {
+        confirmBtn.disabled = false;
+        showPanelError(reassignPanel, err.message || 'Unable to update the assignment.');
+      });
     });
 
     document.getElementById('escalateCancelBtn').addEventListener('click', closePanels);
@@ -1257,7 +1426,7 @@ document.addEventListener('DOMContentLoaded', function () {
       var critical = tickets.filter(function (t) { return t.priority === 'Critical' && isOpenStatus(t.status); }).length;
       var unassigned = tickets.filter(function (t) { return !t.assignedAgent && isOpenStatus(t.status); }).length;
       var resolved = tickets.filter(function (t) { return t.status === 'Resolved' || t.status === 'Closed'; }).length;
-      var mine = tickets.filter(function (t) { return t.assignedAgent === agent.name; }).length;
+      var mine = tickets.filter(isMine).length;
 
       document.getElementById('statOpen').textContent = open;
       document.getElementById('statCritical').textContent = critical;
@@ -1313,11 +1482,11 @@ document.addEventListener('DOMContentLoaded', function () {
       badge.className = 'status-badge ' + statusClass(t.status);
 
       var assignBtn = document.getElementById('assignToMeBtn');
-      assignBtn.disabled = t.assignedAgent === agent.name;
-      assignBtn.textContent = t.assignedAgent === agent.name ? 'Assigned to you' : 'Assign to me';
+      assignBtn.disabled = isMine(t);
+      assignBtn.textContent = isMine(t) ? 'Assigned to you' : 'Assign to me';
       var reassignBtn = document.getElementById('reassignBtn');
       reassignBtn.disabled = !canReassign(t);
-      reassignBtn.textContent = t.assignedAgent ? 'Reassign…' : 'Assign to…';
+      reassignBtn.textContent = t.assignedAgentId ? 'Reassign…' : 'Assign to…';
       renderStatusActions(t);
       document.getElementById('messageCustomerBtn').setAttribute('href', 'ticket-chat.html?ticket=' + encodeURIComponent(t.id) + '&role=agent');
 
@@ -1342,7 +1511,8 @@ document.addEventListener('DOMContentLoaded', function () {
       if (escBanner && escText) {
         if (t.status === 'Escalated' && t.escalation) {
           escBanner.style.display = 'flex';
-          escText.innerHTML = 'Escalated to <strong>' + t.escalation.to + '</strong> by ' + t.escalation.by + ': "' + t.escalation.reason + '"';
+          escText.innerHTML = 'Escalated to <strong>' + t.escalation.to + '</strong>' +
+            (t.escalation.by ? ' by ' + t.escalation.by : '') + ': "' + t.escalation.reason + '"';
         } else {
           escBanner.style.display = 'none';
         }
@@ -1355,7 +1525,9 @@ document.addEventListener('DOMContentLoaded', function () {
       if (resSummaryBanner && resSummaryText) {
         if (t.resolutionSummary) {
           resSummaryBanner.style.display = 'flex';
-          resSummaryText.textContent = 'Resolution (' + t.resolutionSummary.by + '): ' + t.resolutionSummary.text;
+          resSummaryText.textContent = t.resolutionSummary.by
+            ? 'Resolution (' + t.resolutionSummary.by + '): ' + t.resolutionSummary.text
+            : 'Resolution: ' + t.resolutionSummary.text;
         } else {
           resSummaryBanner.style.display = 'none';
         }
@@ -1386,7 +1558,7 @@ document.addEventListener('DOMContentLoaded', function () {
       var listEl = document.getElementById('queueList');
       var q = searchQuery.trim().toLowerCase();
       var filtered = tickets.filter(function (t) {
-        if (currentFilter === 'Mine' && t.assignedAgent !== agent.name) return false;
+        if (currentFilter === 'Mine' && !isMine(t)) return false;
         if (currentFilter !== 'All' && currentFilter !== 'Mine' && t.priority !== currentFilter) return false;
         if (statusFilter && t.status !== statusFilter) return false;
         if (categoryFilter && t.category !== categoryFilter) return false;
@@ -1438,10 +1610,18 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('assignToMeBtn').addEventListener('click', function () {
       var t = tickets.filter(function (x) { return x.id === selectedId; })[0];
       if (!t) return;
-      t.assignedAgent = agent.name;
-      if (t.status === 'Created') t.status = 'Assigned';
-      persistTickets();
-      renderStats(); renderDetail(); renderList();
+      var btn = document.getElementById('assignToMeBtn');
+      btn.disabled = true; // re-enabled by renderDetail on success
+      assignTicket(t.id, agent.id, function (updated) {
+        replaceTicketIn(tickets, updated);
+        // Keep the poll's signature in step so it doesn't re-render on top of
+        // a change this tab just made.
+        agentKnownSignature[updated.id] = updated.status + '|' + (updated.assignedAgent || '');
+        renderStats(); renderDetail(); renderList();
+      }, function (err) {
+        btn.disabled = false;
+        alert(err.message || 'Unable to assign this ticket.');
+      });
     });
 
     document.querySelectorAll('.filter-chip').forEach(function (chip) {
@@ -1495,10 +1675,16 @@ document.addEventListener('DOMContentLoaded', function () {
       });
     }
 
-    if (!tickets.length) {
-      document.getElementById('queueEmpty').style.display = 'block';
-      document.getElementById('agentDash').style.display = 'none';
-    } else {
+    // Renders whatever `tickets` currently holds. Called once the initial
+    // fetch resolves (and on failure, which lands on the empty state).
+    function bootstrapAgentQueue() {
+      if (!tickets.length) {
+        document.getElementById('queueEmpty').style.display = 'block';
+        document.getElementById('agentDash').style.display = 'none';
+        return;
+      }
+      document.getElementById('queueEmpty').style.display = 'none';
+      document.getElementById('agentDash').style.display = '';
       renderStats();
       renderDetail();
       renderList();
@@ -1514,14 +1700,8 @@ document.addEventListener('DOMContentLoaded', function () {
     var agentKnownSignature = {};
     tickets.forEach(function (t) { agentKnownSignature[t.id] = t.status + '|' + (t.assignedAgent || ''); });
 
-    function applyRemoteAgentUpdate(raw) {
-      if (!raw) return;
-      var updated;
-      try { updated = JSON.parse(raw) || []; } catch (err) { return; }
-      updated.forEach(function (t) {
-        if (!t.status) t.status = 'Assigned';
-        if (t.assignedAgent === undefined) t.assignedAgent = null;
-      });
+    function applyRemoteAgentUpdate(updated) {
+      if (!updated) return;
 
       // Only re-render on an actual change — the poll fires every 4s and a
       // careless unconditional re-render would blow away whatever an agent
@@ -1548,16 +1728,29 @@ document.addEventListener('DOMContentLoaded', function () {
       }
     }
 
-    // `storage` only fires in *other* tabs/windows of this origin, so this
-    // tab's own writes (assign to me, status moves, reassign/escalate/resolve)
-    // never re-trigger themselves.
-    window.addEventListener('storage', function (e) {
-      if (e.key === 'docketTickets') applyRemoteAgentUpdate(e.newValue);
+    // Initial load. The agent and user directories are warmed first because
+    // normalizeTicket() reads both to resolve assignedAgent and the requester
+    // email the queue search matches against.
+    withDirectories(function () {
+      fetchTickets(null, function (rows) {
+        tickets = rows;
+        selectedId = tickets.length ? tickets[0].id : null;
+        tickets.forEach(function (t) {
+          agentKnownSignature[t.id] = t.status + '|' + (t.assignedAgent || '');
+        });
+        bootstrapAgentQueue();
+      }, function () {
+        bootstrapAgentQueue();
+      });
     });
-    // Polling fallback for contexts where the storage event doesn't relay —
-    // a no-op once agentKnownSignature is caught up, same as the portal's.
+
+    // The `storage` listener that used to drive this is gone along with the
+    // localStorage ticket store; the poll is now the only path by which this
+    // queue notices a change made elsewhere. Still a no-op until a status or
+    // assignment actually moves, so an open reassign/escalate/resolve panel
+    // doesn't get blown away mid-edit.
     setInterval(function () {
-      applyRemoteAgentUpdate(localStorage.getItem('docketTickets'));
+      fetchTickets(null, applyRemoteAgentUpdate);
     }, 4000);
   }
 
@@ -1588,9 +1781,11 @@ document.addEventListener('DOMContentLoaded', function () {
       window.location.href = chatRole === 'agent' ? 'agent-dashboard.html' : chatRole === 'admin' ? 'admin-dashboard.html' : 'portal.html';
     });
 
-    var chatAllTickets = [];
-    try { chatAllTickets = JSON.parse(localStorage.getItem('docketTickets')) || []; } catch (e) { chatAllTickets = []; }
-    var chatTicket = chatAllTickets.filter(function (t) { return t.id === chatTicketId; })[0];
+    // The chat header needs the ticket's subject and priority. Those used to be
+    // read out of the `docketTickets` localStorage array, which 1D-i removed —
+    // so this fetches the one ticket from the API instead (see initChat below).
+    // The messages themselves still live in `docketChat:<id>` until 1D-v.
+    var chatTicket = null;
 
     var chatInput = document.getElementById('chatInput');
     var chatSendBtn = document.getElementById('chatSendBtn');
@@ -1637,6 +1832,11 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // Keeps the ticket's "files attached" count (shown on the portal/agent dashboard) in sync
     // whenever someone attaches files from the chat thread, not just at creation time.
+    // Dead until 1D-v: this bumped the attachment count on the `docketTickets`
+    // record, which no longer exists, so it now finds nothing and writes
+    // nothing. Harmless, but it does mean a public chat attachment stops
+    // incrementing the ticket's file count until the comments phase moves this
+    // to the API (the server already computes attachment_count correctly).
     function bumpTicketFileCount(ticketId, addCount) {
       var allT = [];
       try { allT = JSON.parse(localStorage.getItem('docketTickets')) || []; } catch (e) { allT = []; }
@@ -1668,102 +1868,117 @@ document.addEventListener('DOMContentLoaded', function () {
       });
     }
 
-    if (!chatTicket) {
-      document.getElementById('chatTicketId').textContent = 'Ticket not found';
-      document.getElementById('chatTicketSubject').textContent = '';
-      document.getElementById('chatTicketPriority').style.display = 'none';
-      chatInput.disabled = true;
-      chatSendBtn.disabled = true;
-      if (chatAttachBtn) chatAttachBtn.disabled = true;
-      chatThread.innerHTML = '<p class="chat-empty">This ticket could not be found in this browser.</p>';
-    } else {
-      document.getElementById('chatTicketId').textContent = chatTicket.id;
-      document.getElementById('chatTicketSubject').textContent = chatTicket.subject;
-      document.getElementById('chatTicketPriority').textContent = chatTicket.priority;
+    function initChat() {
+      if (!chatTicket) {
+        document.getElementById('chatTicketId').textContent = 'Ticket not found';
+        document.getElementById('chatTicketSubject').textContent = '';
+        document.getElementById('chatTicketPriority').style.display = 'none';
+        chatInput.disabled = true;
+        chatSendBtn.disabled = true;
+        if (chatAttachBtn) chatAttachBtn.disabled = true;
+        chatThread.innerHTML = '<p class="chat-empty">This ticket could not be found in this browser.</p>';
+      } else {
+        document.getElementById('chatTicketId').textContent = chatTicket.id;
+        document.getElementById('chatTicketSubject').textContent = chatTicket.subject;
+        document.getElementById('chatTicketPriority').textContent = chatTicket.priority;
 
-      var chatKey = 'docketChat:' + chatTicket.id;
+        var chatKey = 'docketChat:' + chatTicket.id;
 
-      var escapeHtml = function (str) {
-        return str.replace(/[&<>"']/g, function (c) {
-          return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
-        });
-      };
+        var escapeHtml = function (str) {
+          return str.replace(/[&<>"']/g, function (c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+          });
+        };
 
-      var formatChatTime = function (d) {
-        var h = d.getHours(); var m = d.getMinutes();
-        var ampm = h >= 12 ? 'PM' : 'AM';
-        h = h % 12; if (h === 0) h = 12;
-        return h + ':' + (m < 10 ? '0' : '') + m + ' ' + ampm;
-      };
+        var formatChatTime = function (d) {
+          var h = d.getHours(); var m = d.getMinutes();
+          var ampm = h >= 12 ? 'PM' : 'AM';
+          h = h % 12; if (h === 0) h = 12;
+          return h + ':' + (m < 10 ? '0' : '') + m + ' ' + ampm;
+        };
 
-      var loadChatMessages = function () {
-        var msgs = [];
-        try { msgs = JSON.parse(localStorage.getItem(chatKey)) || []; } catch (e) { msgs = []; }
-        return msgs;
-      };
+        var loadChatMessages = function () {
+          var msgs = [];
+          try { msgs = JSON.parse(localStorage.getItem(chatKey)) || []; } catch (e) { msgs = []; }
+          return msgs;
+        };
 
-      var renderChatMessages = function () {
-        var msgs = loadChatMessages();
-        // Customers only ever see public comments; internal notes are agent/team-only.
-        if (chatRole === 'customer') {
-          msgs = msgs.filter(function (m) { return m.visibility !== 'internal'; });
-        }
-        chatThread.innerHTML = '';
-        if (!msgs.length) {
-          chatThread.innerHTML = '<p class="chat-empty">No messages yet — say hello or share the steps to fix this.</p>';
-          return;
-        }
-        msgs.forEach(function (m) {
-          var isInternal = m.visibility === 'internal';
-          var mine = m.from === chatRole;
-          var bubble = document.createElement('div');
-          bubble.className = 'chat-bubble ' + (isInternal ? 'internal' : (mine ? 'out' : 'in'));
-          var label = isInternal
-            ? (mine ? 'You · Internal note' : escapeHtml(m.name) + ' · Internal note')
-            : (mine ? 'You' : escapeHtml(m.name));
-          var filesHtml = '';
-          if (m.files && m.files.length) {
-            filesHtml = '<div class="chat-attachments">' + m.files.map(function (f) {
-              return '<span class="chat-attachment-chip">📎 ' + escapeHtml(f) + '</span>';
-            }).join('') + '</div>';
+        var renderChatMessages = function () {
+          var msgs = loadChatMessages();
+          // Customers only ever see public comments; internal notes are agent/team-only.
+          if (chatRole === 'customer') {
+            msgs = msgs.filter(function (m) { return m.visibility !== 'internal'; });
           }
-          bubble.innerHTML =
-            '<span class="chat-name">' + label + '</span>' +
-            (m.text ? escapeHtml(m.text) : '') +
-            filesHtml +
-            '<span class="chat-time">' + m.time + '</span>';
-          chatThread.appendChild(bubble);
+          chatThread.innerHTML = '';
+          if (!msgs.length) {
+            chatThread.innerHTML = '<p class="chat-empty">No messages yet — say hello or share the steps to fix this.</p>';
+            return;
+          }
+          msgs.forEach(function (m) {
+            var isInternal = m.visibility === 'internal';
+            var mine = m.from === chatRole;
+            var bubble = document.createElement('div');
+            bubble.className = 'chat-bubble ' + (isInternal ? 'internal' : (mine ? 'out' : 'in'));
+            var label = isInternal
+              ? (mine ? 'You · Internal note' : escapeHtml(m.name) + ' · Internal note')
+              : (mine ? 'You' : escapeHtml(m.name));
+            var filesHtml = '';
+            if (m.files && m.files.length) {
+              filesHtml = '<div class="chat-attachments">' + m.files.map(function (f) {
+                return '<span class="chat-attachment-chip">📎 ' + escapeHtml(f) + '</span>';
+              }).join('') + '</div>';
+            }
+            bubble.innerHTML =
+              '<span class="chat-name">' + label + '</span>' +
+              (m.text ? escapeHtml(m.text) : '') +
+              filesHtml +
+              '<span class="chat-time">' + m.time + '</span>';
+            chatThread.appendChild(bubble);
+          });
+          chatThread.scrollTop = chatThread.scrollHeight;
+        };
+
+        var sendChatMessage = function () {
+          var text = chatInput.value.trim();
+          if (!text && !chatFiles.length) return;
+          var msgs = loadChatMessages();
+          var visibility = ((chatRole === 'agent' || chatRole === 'admin') && chatVisibility === 'internal') ? 'internal' : 'public';
+          var msg = { from: chatRole, name: chatActorName, text: text, time: formatChatTime(new Date()), visibility: visibility };
+          if (chatFiles.length) msg.files = chatFiles.slice();
+          msgs.push(msg);
+          localStorage.setItem(chatKey, JSON.stringify(msgs));
+          chatInput.value = '';
+          if (chatFiles.length) {
+            // Internal notes are agent/team-only, so their attachments shouldn't count toward
+            // the customer-visible "files attached" total shown on the portal.
+            if (visibility === 'public') bumpTicketFileCount(chatTicket.id, chatFiles.length);
+            chatFiles = [];
+            renderChatFiles();
+          }
+          renderChatMessages();
+        };
+
+        chatSendBtn.addEventListener('click', sendChatMessage);
+        chatInput.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage(); }
         });
-        chatThread.scrollTop = chatThread.scrollHeight;
-      };
 
-      var sendChatMessage = function () {
-        var text = chatInput.value.trim();
-        if (!text && !chatFiles.length) return;
-        var msgs = loadChatMessages();
-        var visibility = ((chatRole === 'agent' || chatRole === 'admin') && chatVisibility === 'internal') ? 'internal' : 'public';
-        var msg = { from: chatRole, name: chatActorName, text: text, time: formatChatTime(new Date()), visibility: visibility };
-        if (chatFiles.length) msg.files = chatFiles.slice();
-        msgs.push(msg);
-        localStorage.setItem(chatKey, JSON.stringify(msgs));
-        chatInput.value = '';
-        if (chatFiles.length) {
-          // Internal notes are agent/team-only, so their attachments shouldn't count toward
-          // the customer-visible "files attached" total shown on the portal.
-          if (visibility === 'public') bumpTicketFileCount(chatTicket.id, chatFiles.length);
-          chatFiles = [];
-          renderChatFiles();
-        }
         renderChatMessages();
-      };
-
-      chatSendBtn.addEventListener('click', sendChatMessage);
-      chatInput.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage(); }
-      });
-
-      renderChatMessages();
+      }
     }
+
+    // GET /api/tickets/:id — a 404 (or a bad ?ticket= param) falls through to
+    // initChat's existing "not found" branch, which disables the composer.
+    fetch(API_BASE + '/api/tickets/' + encodeURIComponent(chatTicketId))
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (row) {
+        if (row) chatTicket = normalizeTicket(row);
+        initChat();
+      })
+      .catch(function (err) {
+        console.error('Chat ticket load error:', err);
+        initChat();
+      });
   }
 
   // ---- Portal topbar actions ----
@@ -1820,26 +2035,13 @@ document.addEventListener('DOMContentLoaded', function () {
       if (agentsPanel && agentsPanel.style.display !== 'none') renderAgentDirectory();
     });
 
-    // Tickets — same shared docketTickets record every other view reads/writes
+    // Tickets — fetched from the API at the bottom of this block, the same
+    // GET /api/tickets the agent queue reads, so the two consoles are looking
+    // at one source of truth again rather than a shared localStorage array.
     var adminTickets = [];
-    try { adminTickets = JSON.parse(localStorage.getItem('docketTickets')) || []; } catch (e) { adminTickets = []; }
-    adminTickets = adminTickets.map(function (t) {
-      if (!t.status) t.status = 'Assigned';
-      if (t.assignedAgent === undefined) t.assignedAgent = null;
-      if (!t.createdAt) t.createdAt = new Date().toISOString();
-      return t;
-    });
 
-    function persistAdminTickets() {
-      localStorage.setItem('docketTickets', JSON.stringify(adminTickets));
-      var latestT = null;
-      try { latestT = JSON.parse(localStorage.getItem('docketLatestTicket')); } catch (e) { latestT = null; }
-      if (latestT) {
-        var m = adminTickets.filter(function (t) { return t.id === latestT.id; })[0];
-        if (m) localStorage.setItem('docketLatestTicket', JSON.stringify(m));
-      }
-    }
-    persistAdminTickets();
+    // (persistAdminTickets is gone — the admin console's only write was
+    // assignment, which now goes through PATCH /api/tickets/:id/assign.)
 
     function adminStatusClass(status) {
       if (status === 'Resolved') return 'status-resolved';
@@ -1889,15 +2091,17 @@ document.addEventListener('DOMContentLoaded', function () {
       var unassignedOpt = document.createElement('option');
       unassignedOpt.value = '';
       unassignedOpt.textContent = 'Unassigned';
-      if (!t.assignedAgent) unassignedOpt.selected = true;
+      if (!t.assignedAgentId) unassignedOpt.selected = true;
       adminAssignSelect.appendChild(unassignedOpt);
+      // Option values are agent ids — what PATCH /assign takes — labelled by name.
       loadAgents().forEach(function (a) {
         var opt = document.createElement('option');
-        opt.value = a.name; opt.textContent = a.name;
-        if (a.name === t.assignedAgent) opt.selected = true;
+        opt.value = a.id; opt.textContent = a.name;
+        if (a.id === t.assignedAgentId) opt.selected = true;
         adminAssignSelect.appendChild(opt);
       });
       adminAssignNote.value = '';
+      clearPanelError(adminAssignPanel);
       adminAssignPanel.style.display = 'block';
     }
     function closeAdminAssignPanel() { adminAssignPanel.style.display = 'none'; }
@@ -1912,25 +2116,31 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('adminAssignConfirmBtn').addEventListener('click', function () {
       var t = adminTickets.filter(function (x) { return x.id === adminSelectedId; })[0];
       if (!t) return;
-      var to = adminAssignSelect.value; // '' means the Unassigned option was picked
-      if (to === (t.assignedAgent || '')) { closeAdminAssignPanel(); return; }
+      var toId = adminAssignSelect.value; // '' means the Unassigned option was picked
+      if (toId === (t.assignedAgentId || '')) { closeAdminAssignPanel(); return; }
+
       var from = t.assignedAgent || 'Unassigned';
-      t.assignedAgent = to || null;
-      if (to) {
-        if (t.status === 'Created') t.status = 'Assigned';
-      } else if (t.status !== 'Resolved' && t.status !== 'Closed') {
-        // Sending it back to the pool — reset to Created so the status machine's
-        // assumption (Assigned+ always has an owner) still holds.
-        t.status = 'Created';
-      }
-      persistAdminTickets();
+      var toName = toId ? agentNameForId(toId) : null;
       var note = adminAssignNote.value.trim();
-      var noteText = to
-        ? (from === 'Unassigned' ? 'Assigned to ' + to : 'Reassigned from ' + from + ' to ' + to)
-        : 'Unassigned (was ' + from + ')';
-      addAdminNote(t.id, noteText + ' by an admin' + (note ? ' — ' + note : '.'));
-      closeAdminAssignPanel();
-      renderAdminStats(); renderAdminDetail(); renderAdminList();
+      var confirmBtn = document.getElementById('adminAssignConfirmBtn');
+
+      clearPanelError(adminAssignPanel);
+      confirmBtn.disabled = true;
+      assignTicket(t.id, toId, function (updated) {
+        confirmBtn.disabled = false;
+        replaceTicketIn(adminTickets, updated);
+        adminKnownSignature[updated.id] = updated.status + '|' + (updated.assignedAgent || '');
+        var noteText = toName
+          ? (from === 'Unassigned' ? 'Assigned to ' + toName : 'Reassigned from ' + from + ' to ' + toName)
+          : 'Unassigned (was ' + from + ')';
+        // Still a localStorage internal note until 1D-v moves comments.
+        addAdminNote(updated.id, noteText + ' by an admin' + (note ? ' — ' + note : '.'));
+        closeAdminAssignPanel();
+        renderAdminStats(); renderAdminDetail(); renderAdminList();
+      }, function (err) {
+        confirmBtn.disabled = false;
+        showPanelError(adminAssignPanel, err.message || 'Unable to update the assignment.');
+      });
     });
 
     function renderAdminDetail() {
@@ -1977,7 +2187,8 @@ document.addEventListener('DOMContentLoaded', function () {
       var escText = document.getElementById('adminDashEscalationText');
       if (t.status === 'Escalated' && t.escalation) {
         escBanner.style.display = 'flex';
-        escText.innerHTML = 'Escalated to <strong>' + t.escalation.to + '</strong> by ' + t.escalation.by + ': "' + t.escalation.reason + '"';
+        escText.innerHTML = 'Escalated to <strong>' + t.escalation.to + '</strong>' +
+          (t.escalation.by ? ' by ' + t.escalation.by : '') + ': "' + t.escalation.reason + '"';
       } else {
         escBanner.style.display = 'none';
       }
@@ -2065,10 +2276,16 @@ document.addEventListener('DOMContentLoaded', function () {
       });
     }
 
-    if (!adminTickets.length) {
-      document.getElementById('adminQueueEmpty').style.display = 'block';
-      document.getElementById('adminDash').style.display = 'none';
-    } else {
+    // Renders whatever `adminTickets` currently holds. Called once the initial
+    // fetch resolves (and on failure, which lands on the empty state).
+    function bootstrapAdminConsole() {
+      if (!adminTickets.length) {
+        document.getElementById('adminQueueEmpty').style.display = 'block';
+        document.getElementById('adminDash').style.display = 'none';
+        return;
+      }
+      document.getElementById('adminQueueEmpty').style.display = 'none';
+      document.getElementById('adminDash').style.display = '';
       renderAdminStats(); renderAdminDetail(); renderAdminList();
     }
 
@@ -2082,14 +2299,8 @@ document.addEventListener('DOMContentLoaded', function () {
     var adminKnownSignature = {};
     adminTickets.forEach(function (t) { adminKnownSignature[t.id] = t.status + '|' + (t.assignedAgent || ''); });
 
-    function applyRemoteAdminUpdate(raw) {
-      if (!raw) return;
-      var updated;
-      try { updated = JSON.parse(raw) || []; } catch (err) { return; }
-      updated.forEach(function (t) {
-        if (!t.status) t.status = 'Assigned';
-        if (t.assignedAgent === undefined) t.assignedAgent = null;
-      });
+    function applyRemoteAdminUpdate(updated) {
+      if (!updated) return;
 
       var changed = updated.length !== adminTickets.length;
       updated.forEach(function (t) {
@@ -2113,11 +2324,27 @@ document.addEventListener('DOMContentLoaded', function () {
       }
     }
 
-    window.addEventListener('storage', function (e) {
-      if (e.key === 'docketTickets') applyRemoteAdminUpdate(e.newValue);
+    // Initial load — directories first, same reason as the agent queue: the
+    // assignee filter and the queue search both match on names and requester
+    // emails that normalizeTicket() resolves from those caches.
+    withDirectories(function () {
+      fetchTickets(null, function (rows) {
+        adminTickets = rows;
+        adminSelectedId = adminTickets.length ? adminTickets[0].id : null;
+        adminTickets.forEach(function (t) {
+          adminKnownSignature[t.id] = t.status + '|' + (t.assignedAgent || '');
+        });
+        populateAssigneeFilter();
+        bootstrapAdminConsole();
+      }, function () {
+        bootstrapAdminConsole();
+      });
     });
+
+    // The `storage` listener is gone with the localStorage ticket store; the
+    // poll is now the only way this console notices a change made elsewhere.
     setInterval(function () {
-      applyRemoteAdminUpdate(localStorage.getItem('docketTickets'));
+      fetchTickets(null, applyRemoteAdminUpdate);
     }, 4000);
 
     // ---- Tabs: Tickets / Agents ----
