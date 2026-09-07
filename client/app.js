@@ -1,3 +1,9 @@
+// ---- API configuration ----
+const API_BASE =
+  window.location.hostname === 'localhost'
+    ? 'http://localhost:4000'
+    : 'https://ticket-management-system-9ssy.onrender.com';
+    
 document.addEventListener('DOMContentLoaded', function () {
 
   // Show only the pill for the current page (based on data-step); hide the rest
