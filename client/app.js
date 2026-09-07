@@ -178,58 +178,74 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   }
 
-  // ---- Agent directory (docketAgents): shared by agent sign-in, the agent dashboard's
-  // reassign panel, and the admin console — this replaces the old hardcoded roster array
-  // with real records an admin can create, so they persist and are the same list everywhere.
-  var AGENT_SEED_NAMES = ['Maya Owusu', 'Kwame Boateng', 'Ama Serwaa', 'Yaw Mensah', 'Efia Asante'];
-
-  function genAgentId(existingAgents) {
-    var existingIds = (existingAgents || []).map(function (a) { return a.id; });
-    return genUniqueId('AGT', existingIds);
-  }
-
-  function slugAgentEmail(name) {
-    return name.trim().toLowerCase().replace(/[^a-z\s]/g, '').trim().replace(/\s+/g, '.') + '@docket.com';
-  }
+  // ---- Agent directory: shared by agent sign-in, the agent dashboard's reassign
+  // panel, and the admin console. Now backed by GET /api/agents on Render/SQLite —
+  // the seeded five agents (Maya Owusu, Kwame Boateng, Ama Serwaa, Yaw Mensah, Efia
+  // Asante) already live there via db/seed.js, so the client no longer seeds or
+  // mints AGT ids itself.
+  //
+  // loadAgents() stays a *synchronous* read of a local cache — every existing call
+  // site (reassign dropdown, admin assign dropdown, admin directory tab, stats
+  // counts) reads it that way, several of them on every 4s poll tick. Hitting the
+  // network that often would be wasteful, so refreshAgentDirectory() is what
+  // actually talks to the API; call it once when a page needs the directory, then
+  // read loadAgents() afterward. It's safe to call again any time (e.g. after
+  // adding an agent) to pick up the latest list.
+  var agentDirectoryCache = [];
 
   function loadAgents() {
-    var agents = [];
-    try { agents = JSON.parse(localStorage.getItem('docketAgents')) || []; } catch (e) { agents = []; }
-    if (!agents.length) {
-      // First run: seed the directory from the old mock roster, so tickets already
-      // assigned to these names (from earlier sessions) still resolve to a real record.
-      var seeded = [];
-      agents = AGENT_SEED_NAMES.map(function (name) {
-        var rec = { id: genAgentId(seeded), name: name, email: slugAgentEmail(name), createdAt: new Date().toISOString(), createdBy: 'seed' };
-        seeded.push(rec);
-        return rec;
+    return agentDirectoryCache;
+  }
+
+  function normalizeAgent(a) {
+    return { id: a.id, name: a.full_name, email: a.email, createdAt: a.created_at, createdBy: a.created_by };
+  }
+
+  function refreshAgentDirectory(onDone, onError) {
+    fetch(API_BASE + '/api/agents')
+      .then(function (response) {
+        if (!response.ok) throw new Error('Unable to load the agent directory.');
+        return response.json();
+      })
+      .then(function (agents) {
+        agentDirectoryCache = agents.map(normalizeAgent);
+        if (onDone) onDone(agentDirectoryCache);
+      })
+      .catch(function (err) {
+        console.error('Agent directory load error:', err);
+        if (onError) onError(err);
       });
-      localStorage.setItem('docketAgents', JSON.stringify(agents));
-    }
-    return agents;
   }
 
-  function saveAgents(agents) {
-    localStorage.setItem('docketAgents', JSON.stringify(agents));
-  }
-
-  // Looks up (or silently creates) a directory record by email for an agent signing
-  // in, so the "any password works" demo sign-in still lands on a stable identity —
-  // and on the identity an admin set up, if that email was created from the admin console.
-  function findOrCreateAgentByEmail(email, fallbackName) {
-    var agents = loadAgents();
-    var match = agents.filter(function (a) { return a.email.toLowerCase() === email.toLowerCase(); })[0];
-    if (match) return match;
-    var rec = { id: genAgentId(agents), name: fallbackName, email: email, createdAt: new Date().toISOString(), createdBy: 'self-signup' };
-    agents.push(rec);
-    saveAgents(agents);
-    return rec;
+  // Agent self-sign-in (agent-login.html): the backend's find-or-create-by-email
+  // behavior on POST /api/agents mirrors the app's existing "any password works"
+  // demo design — there's no agent password on the backend to verify against, so
+  // the client-side password check stays as-is (just requires something typed).
+  function loginOrCreateAgentByEmail(email, fallbackName, onDone, onError) {
+    fetch(API_BASE + '/api/agents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ full_name: fallbackName, email: email, created_by: 'self-signup' })
+    })
+      .then(function (response) {
+        return response.json().then(function (data) {
+          if (!response.ok) throw new Error(data.error || 'Unable to sign in.');
+          return data;
+        });
+      })
+      .then(function (data) {
+        onDone(normalizeAgent(data));
+      })
+      .catch(onError);
   }
 
   // ---- Agent sign-in (agent-login.html): validation + confirmation stub ----
   var agentLoginForm = document.getElementById('agentLoginForm');
   if (agentLoginForm) {
-    document.getElementById('submitAgentLogin').addEventListener('click', function () {
+    var submitAgentLoginBtn = document.getElementById('submitAgentLogin');
+    var submitAgentLoginDefaultLabel = submitAgentLoginBtn.textContent;
+
+    submitAgentLoginBtn.addEventListener('click', function () {
       var email = document.getElementById('agentEmail');
       var password = document.getElementById('agentPassword');
       var valid = true;
@@ -253,21 +269,35 @@ document.addEventListener('DOMContentLoaded', function () {
 
       var namePart = email.value.trim().split('@')[0].replace(/[._]/g, ' ');
       var displayName = namePart.replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+
+      submitAgentLoginBtn.disabled = true;
+      submitAgentLoginBtn.textContent = 'Signing in…';
+
       // Reuses an existing directory record if this email was set up from the admin
-      // console (so that identity sticks), otherwise creates one on the fly.
-      var record = findOrCreateAgentByEmail(email.value.trim(), displayName);
+      // console (so that identity sticks), otherwise creates one on the fly — same
+      // find-or-create contract as before, now backed by Render/SQLite.
+      loginOrCreateAgentByEmail(email.value.trim(), displayName, function (record) {
+        submitAgentLoginBtn.disabled = false;
+        submitAgentLoginBtn.textContent = submitAgentLoginDefaultLabel;
 
-      document.getElementById('agentStubId').textContent = record.id;
-      document.getElementById('agentStubName').textContent = ', ' + record.name.split(' ')[0];
-      agentLoginForm.style.display = 'none';
-      document.getElementById('agentStub').classList.add('show');
+        document.getElementById('agentStubId').textContent = record.id;
+        document.getElementById('agentStubName').textContent = ', ' + record.name.split(' ')[0];
+        agentLoginForm.style.display = 'none';
+        document.getElementById('agentStub').classList.add('show');
 
-      localStorage.setItem('docketAgent', JSON.stringify({
-        id: record.id,
-        name: record.name,
-        email: record.email,
-        keepSignedIn: document.getElementById('keepSignedIn').checked
-      }));
+        localStorage.setItem('docketAgent', JSON.stringify({
+          id: record.id,
+          name: record.name,
+          email: record.email,
+          keepSignedIn: document.getElementById('keepSignedIn').checked
+        }));
+      }, function (err) {
+        console.error('Agent sign-in error:', err);
+        submitAgentLoginBtn.disabled = false;
+        submitAgentLoginBtn.textContent = submitAgentLoginDefaultLabel;
+        document.getElementById('f-agentEmail').classList.add('invalid');
+        alert(err.message || 'Unable to sign in. Please try again.');
+      });
     });
   }
 // ---- Admin sign-in (admin-login.html): single seeded super account, validation + confirmation stub ----
@@ -1043,9 +1073,15 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     // ---- Reassign / escalate ----
-    // Pulled live from the shared agent directory (docketAgents), so an agent added
-    // from the admin console shows up here without any change to this file.
-    var AGENT_ROSTER = loadAgents().map(function (a) { return a.name; });
+    // Pulled from the shared agent directory (now GET /api/agents), so an agent
+    // added from the admin console shows up here without any change to this file.
+    // AGENT_ROSTER starts empty and fills in once the fetch resolves; that's fine
+    // in practice since openReassignPanel() only runs later, in response to a
+    // click, by which point the directory has long since loaded.
+    var AGENT_ROSTER = [];
+    refreshAgentDirectory(function (agents) {
+      AGENT_ROSTER = agents.map(function (a) { return a.name; });
+    });
     var ESCALATION_TARGETS = ['Tier 2 Support', 'Team Lead', 'Engineering', 'Network Operations Center'];
 
     function formatNoteTime(d) {
@@ -1757,6 +1793,16 @@ document.addEventListener('DOMContentLoaded', function () {
       window.location.href = 'admin-login.html';
     });
 
+    // Load the agent directory once up front (see refreshAgentDirectory above);
+    // everything below reads the synchronous loadAgents() cache and just gets
+    // re-rendered here once the real data is in.
+    refreshAgentDirectory(function () {
+      renderAdminStats();
+      populateAssigneeFilter();
+      var agentsPanel = document.getElementById('adminAgentsPanel');
+      if (agentsPanel && agentsPanel.style.display !== 'none') renderAgentDirectory();
+    });
+
     // Tickets — same shared docketTickets record every other view reads/writes
     var adminTickets = [];
     try { adminTickets = JSON.parse(localStorage.getItem('docketTickets')) || []; } catch (e) { adminTickets = []; }
@@ -1970,13 +2016,19 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     var aqAssignee = document.getElementById('adminQueueAssigneeFilter');
-    if (aqAssignee) {
+    // Re-runnable (not just a one-time forEach) so it can be called again once
+    // refreshAgentDirectory's fetch resolves, without duplicating options.
+    function populateAssigneeFilter() {
+      if (!aqAssignee) return;
+      Array.prototype.slice.call(aqAssignee.querySelectorAll('option[data-agent-option]')).forEach(function (opt) { opt.remove(); });
       loadAgents().forEach(function (a) {
         var opt = document.createElement('option');
         opt.value = a.name; opt.textContent = a.name;
+        opt.setAttribute('data-agent-option', '1');
         aqAssignee.appendChild(opt);
       });
     }
+    populateAssigneeFilter();
     var aqSearch = document.getElementById('adminQueueSearchInput');
     var aqStatus = document.getElementById('adminQueueStatusFilter');
     var aqCategory = document.getElementById('adminQueueCategoryFilter');
@@ -2114,6 +2166,8 @@ document.addEventListener('DOMContentLoaded', function () {
       else { emailWrap.classList.remove('invalid'); }
 
       if (valid) {
+        // Client-side dupe check against the cached directory for instant feedback;
+        // the server enforces this too (409) as the source of truth below.
         var agents = loadAgents();
         var dupe = agents.some(function (a) { return a.email.toLowerCase() === emailField.value.trim().toLowerCase(); });
         if (dupe) {
@@ -2125,19 +2179,39 @@ document.addEventListener('DOMContentLoaded', function () {
 
       if (!valid) return;
 
-      var agents2 = loadAgents();
-      agents2.push({
-        id: genAgentId(agents2),
-        name: nameField.value.trim(),
-        email: emailField.value.trim(),
-        createdAt: new Date().toISOString(),
-        createdBy: 'admin'
-      });
-      saveAgents(agents2);
-      nameField.value = '';
-      emailField.value = '';
-      renderAgentDirectory();
-      renderAdminStats();
+      var addAgentBtnEl = document.getElementById('addAgentBtn');
+      addAgentBtnEl.disabled = true;
+
+      fetch(API_BASE + '/api/agents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          full_name: nameField.value.trim(),
+          email: emailField.value.trim(),
+          created_by: 'admin'
+        })
+      })
+        .then(function (response) {
+          return response.json().then(function (data) {
+            if (!response.ok) throw new Error(data.error || 'Unable to add this agent.');
+            return data;
+          });
+        })
+        .then(function () {
+          nameField.value = '';
+          emailField.value = '';
+          refreshAgentDirectory(function () {
+            renderAgentDirectory();
+            renderAdminStats();
+          });
+        })
+        .catch(function (err) {
+          emailWrap.classList.add('invalid');
+          emailErr.textContent = err.message || 'Unable to add this agent.';
+        })
+        .finally(function () {
+          addAgentBtnEl.disabled = false;
+        });
     });
   }
 
