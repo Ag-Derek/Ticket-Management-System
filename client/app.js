@@ -303,16 +303,10 @@ document.addEventListener('DOMContentLoaded', function () {
 // ---- Admin sign-in (admin-login.html): single seeded super account, validation + confirmation stub ----
   var adminLoginForm = document.getElementById('adminLoginForm');
   if (adminLoginForm) {
-    // Unlike agent sign-in (any credentials work), the admin console is a single
-    // seeded super account — only this exact email/password combination signs in.
-    var SEED_ADMIN = {
-      email: 'admin@docket.com',
-      password: 'Admin2026!',
-      name: 'System Administrator',
-      id: 'ADM-2026-000001'
-    };
+    var submitAdminLoginBtn = document.getElementById('submitAdminLogin');
+    var submitAdminLoginDefaultLabel = submitAdminLoginBtn.textContent;
 
-    document.getElementById('submitAdminLogin').addEventListener('click', function () {
+    submitAdminLoginBtn.addEventListener('click', function () {
       var email = document.getElementById('adminEmail');
       var password = document.getElementById('adminPassword');
       var emailField = document.getElementById('f-adminEmail');
@@ -333,26 +327,49 @@ document.addEventListener('DOMContentLoaded', function () {
 
       if (!valid) return;
 
-      var matches = email.value.trim().toLowerCase() === SEED_ADMIN.email && password.value === SEED_ADMIN.password;
-      if (!matches) {
-        emailField.classList.add('invalid');
-        passwordField.classList.add('invalid');
-        emailErr.textContent = 'Incorrect email or password.';
-        passwordErr.textContent = 'Incorrect email or password.';
-        return;
-      }
+      submitAdminLoginBtn.disabled = true;
+      submitAdminLoginBtn.textContent = 'Signing in…';
 
-      document.getElementById('adminStubId').textContent = SEED_ADMIN.id;
-      document.getElementById('adminStubName').textContent = ', ' + SEED_ADMIN.name.split(' ')[0];
-      adminLoginForm.style.display = 'none';
-      document.getElementById('adminStub').classList.add('show');
+      // Real bcrypt check on Render now — this is the one login the backend
+      // actually verifies (agents.js has no password at all; see Phase 1B).
+      // Same generic "incorrect email or password" message either way, since
+      // the server itself doesn't say which one was wrong.
+      fetch(API_BASE + '/api/admins/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.value.trim(), password: password.value })
+      })
+        .then(function (response) {
+          return response.json().then(function (data) {
+            if (!response.ok) throw new Error('Incorrect email or password.');
+            return data;
+          });
+        })
+        .then(function (data) {
+          var admin = { id: data.id, name: data.full_name, email: data.email };
 
-      localStorage.setItem('docketAdmin', JSON.stringify({
-        id: SEED_ADMIN.id,
-        name: SEED_ADMIN.name,
-        email: SEED_ADMIN.email,
-        keepSignedIn: document.getElementById('adminKeepSignedIn').checked
-      }));
+          document.getElementById('adminStubId').textContent = admin.id;
+          document.getElementById('adminStubName').textContent = ', ' + admin.name.split(' ')[0];
+          adminLoginForm.style.display = 'none';
+          document.getElementById('adminStub').classList.add('show');
+
+          localStorage.setItem('docketAdmin', JSON.stringify({
+            id: admin.id,
+            name: admin.name,
+            email: admin.email,
+            keepSignedIn: document.getElementById('adminKeepSignedIn').checked
+          }));
+        })
+        .catch(function (err) {
+          emailField.classList.add('invalid');
+          passwordField.classList.add('invalid');
+          emailErr.textContent = err.message || 'Incorrect email or password.';
+          passwordErr.textContent = err.message || 'Incorrect email or password.';
+        })
+        .finally(function () {
+          submitAdminLoginBtn.disabled = false;
+          submitAdminLoginBtn.textContent = submitAdminLoginDefaultLabel;
+        });
     });
   }
 
