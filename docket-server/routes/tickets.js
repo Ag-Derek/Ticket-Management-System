@@ -62,8 +62,13 @@ function attachmentCount(ticketId) {
   ).get(ticketId).n;
 }
 
+// LEFT JOIN (not JOIN) so a ticket never disappears from a queue just
+// because its requester's user record is missing/inconsistent — requester_email
+// simply comes back null in that case, same as any other optional field.
 function ticketWithComments(id) {
-  const ticket = db.prepare('SELECT * FROM tickets WHERE id = ?').get(id);
+  const ticket = db
+    .prepare('SELECT t.*, u.email AS requester_email FROM tickets t LEFT JOIN users u ON u.id = t.user_id WHERE t.id = ?')
+    .get(id);
   if (!ticket) return null;
   const comments = db
     .prepare('SELECT * FROM ticket_comments WHERE ticket_id = ? ORDER BY created_at ASC')
@@ -118,14 +123,14 @@ router.post('/', (req, res) => {
 // GET /api/tickets?user_id=...&assigned_agent_id=...&status=...
 router.get('/', (req, res) => {
   const { user_id, assigned_agent_id, status } = req.query;
-  let sql = 'SELECT * FROM tickets WHERE 1=1';
+  let sql = 'SELECT t.*, u.email AS requester_email FROM tickets t LEFT JOIN users u ON u.id = t.user_id WHERE 1=1';
   const params = [];
 
-  if (user_id) { sql += ' AND user_id = ?'; params.push(user_id); }
-  if (assigned_agent_id) { sql += ' AND assigned_agent_id = ?'; params.push(assigned_agent_id); }
-  if (status) { sql += ' AND status = ?'; params.push(status); }
+  if (user_id) { sql += ' AND t.user_id = ?'; params.push(user_id); }
+  if (assigned_agent_id) { sql += ' AND t.assigned_agent_id = ?'; params.push(assigned_agent_id); }
+  if (status) { sql += ' AND t.status = ?'; params.push(status); }
 
-  sql += ' ORDER BY created_at DESC';
+  sql += ' ORDER BY t.created_at DESC';
   const rows = db.prepare(sql).all(...params);
   res.json(rows.map((t) => ({ ...t, attachment_count: attachmentCount(t.id) })));
 });

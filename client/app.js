@@ -224,34 +224,18 @@ document.addEventListener('DOMContentLoaded', function () {
   // client-side shape — normalizeTicket() bridges the two, so nothing
   // downstream of it needed rewriting.
   //
-  // Three things the API doesn't return yet, each noted at its use site below:
+  // Two things the API doesn't return yet, each noted at its use site below:
   //   - creation-time attachment filenames (only attachment_count comes back)
-  //   - the requester's email (only user_id) — hence the user cache here
   //   - who escalated / who resolved (only the target and the text)
-  var userEmailCache = {};
+  // The requester's email now comes back on the ticket row itself
+  // (requester_email, via tickets.js's LEFT JOIN to users) so there's no
+  // need to fetch the whole users table just to reconstruct it client-side.
 
-  function refreshUserEmails(onDone) {
-    fetch(API_BASE + '/api/users')
-      .then(function (r) { return r.ok ? r.json() : []; })
-      .then(function (users) {
-        users.forEach(function (u) { userEmailCache[u.id] = u.email; });
-        if (onDone) onDone();
-      })
-      .catch(function (err) {
-        console.error('User directory load error:', err);
-        if (onDone) onDone();
-      });
-  }
-
-  // normalizeTicket() reads both the agent and user caches, so they have to be
-  // warm before any ticket is mapped. Either directory failing is non-fatal —
-  // tickets still render, just with an id where a name or email would be — so
-  // both paths continue through to the callback.
+  // normalizeTicket() reads the agent cache, so it has to be warm before any
+  // ticket is mapped. A failed directory load is non-fatal — tickets still
+  // render, just with an id where a name would be — so the callback still runs.
   function withDirectories(onReady) {
-    refreshAgentDirectory(
-      function () { refreshUserEmails(onReady); },
-      function () { refreshUserEmails(onReady); }
-    );
+    refreshAgentDirectory(onReady, onReady);
   }
 
   function agentNameForId(id) {
@@ -277,7 +261,7 @@ document.addEventListener('DOMContentLoaded', function () {
       // later starts returning an `attachments` array.
       attachments: Array.isArray(row.attachments) ? row.attachments : [],
       userId: row.user_id,
-      email: userEmailCache[row.user_id] || row.user_id,
+      email: row.requester_email || row.user_id,
       status: row.status,
       assignedAgentId: row.assigned_agent_id || null,
       assignedAgent: agentNameForId(row.assigned_agent_id),
