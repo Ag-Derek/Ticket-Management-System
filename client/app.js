@@ -374,6 +374,26 @@ document.addEventListener('DOMContentLoaded', function () {
       });
   }
 
+  // Retries a failed fetchTickets() with backoff before finally calling
+  // onError — used for the agent/admin queues' initial load, where a Render
+  // free-tier cold start can make the very first request time out even
+  // though the API is otherwise fine. Without this, that timeout renders
+  // exactly like a genuinely empty queue (see bootstrapAgentQueue/
+  // bootstrapAdminConsole's separate `failed` state, which this feeds).
+  function fetchTicketsWithRetry(query, onDone, onError, attempt) {
+    attempt = attempt || 0;
+    var delays = [2000, 5000]; // wait 2s, then 5s, before giving up
+    fetchTickets(query, onDone, function (err) {
+      if (attempt < delays.length) {
+        setTimeout(function () {
+          fetchTicketsWithRetry(query, onDone, onError, attempt + 1);
+        }, delays[attempt]);
+      } else if (onError) {
+        onError(err);
+      }
+    });
+  }
+
   // Agent self-sign-in (agent-login.html): the backend's find-or-create-by-email
   // behavior on POST /api/agents mirrors the app's existing "any password works"
   // demo design — there's no agent password on the backend to verify against, so
@@ -1712,14 +1732,25 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     // Renders whatever `tickets` currently holds. Called once the initial
-    // fetch resolves (and on failure, which lands on the empty state).
-    function bootstrapAgentQueue() {
-      if (!tickets.length) {
-        document.getElementById('queueEmpty').style.display = 'block';
+    // fetch resolves. Pass `failed: true` when the fetch itself errored out
+    // (after retries) — kept visually and semantically separate from a
+    // genuinely empty queue, which used to render identically and silently.
+    function bootstrapAgentQueue(failed) {
+      var queueEmptyEl = document.getElementById('queueEmpty');
+      var queueErrorEl = document.getElementById('queueLoadError');
+      if (failed) {
+        if (queueErrorEl) queueErrorEl.style.display = 'block';
+        if (queueEmptyEl) queueEmptyEl.style.display = 'none';
         document.getElementById('agentDash').style.display = 'none';
         return;
       }
-      document.getElementById('queueEmpty').style.display = 'none';
+      if (queueErrorEl) queueErrorEl.style.display = 'none';
+      if (!tickets.length) {
+        if (queueEmptyEl) queueEmptyEl.style.display = 'block';
+        document.getElementById('agentDash').style.display = 'none';
+        return;
+      }
+      if (queueEmptyEl) queueEmptyEl.style.display = 'none';
       document.getElementById('agentDash').style.display = '';
       renderStats();
       renderDetail();
@@ -1766,19 +1797,25 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // Initial load. The agent and user directories are warmed first because
     // normalizeTicket() reads both to resolve assignedAgent and the requester
-    // email the queue search matches against.
-    withDirectories(function () {
-      fetchTickets(null, function (rows) {
-        tickets = rows;
-        selectedId = tickets.length ? tickets[0].id : null;
-        tickets.forEach(function (t) {
-          agentKnownSignature[t.id] = t.status + '|' + (t.assignedAgent || '');
+    // email the queue search matches against. Wrapped in a named function so
+    // the Retry button (shown on the failed-load state) can call it again.
+    function loadAgentQueue() {
+      withDirectories(function () {
+        fetchTicketsWithRetry(null, function (rows) {
+          tickets = rows;
+          selectedId = tickets.length ? tickets[0].id : null;
+          tickets.forEach(function (t) {
+            agentKnownSignature[t.id] = t.status + '|' + (t.assignedAgent || '');
+          });
+          bootstrapAgentQueue();
+        }, function () {
+          bootstrapAgentQueue(true);
         });
-        bootstrapAgentQueue();
-      }, function () {
-        bootstrapAgentQueue();
       });
-    });
+    }
+    loadAgentQueue();
+    var queueRetryBtn = document.getElementById('queueRetryBtn');
+    if (queueRetryBtn) queueRetryBtn.addEventListener('click', loadAgentQueue);
 
     // The `storage` listener that used to drive this is gone along with the
     // localStorage ticket store; the poll is now the only path by which this
@@ -2313,14 +2350,25 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     // Renders whatever `adminTickets` currently holds. Called once the initial
-    // fetch resolves (and on failure, which lands on the empty state).
-    function bootstrapAdminConsole() {
-      if (!adminTickets.length) {
-        document.getElementById('adminQueueEmpty').style.display = 'block';
+    // fetch resolves. Pass `failed: true` when the fetch itself errored out
+    // (after retries) — see the matching agent-queue change above for why
+    // this is kept separate from a genuinely empty queue.
+    function bootstrapAdminConsole(failed) {
+      var adminQueueEmptyEl = document.getElementById('adminQueueEmpty');
+      var adminQueueErrorEl = document.getElementById('adminQueueLoadError');
+      if (failed) {
+        if (adminQueueErrorEl) adminQueueErrorEl.style.display = 'block';
+        if (adminQueueEmptyEl) adminQueueEmptyEl.style.display = 'none';
         document.getElementById('adminDash').style.display = 'none';
         return;
       }
-      document.getElementById('adminQueueEmpty').style.display = 'none';
+      if (adminQueueErrorEl) adminQueueErrorEl.style.display = 'none';
+      if (!adminTickets.length) {
+        if (adminQueueEmptyEl) adminQueueEmptyEl.style.display = 'block';
+        document.getElementById('adminDash').style.display = 'none';
+        return;
+      }
+      if (adminQueueEmptyEl) adminQueueEmptyEl.style.display = 'none';
       document.getElementById('adminDash').style.display = '';
       renderAdminStats(); renderAdminDetail(); renderAdminList();
     }
@@ -2362,20 +2410,27 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // Initial load — directories first, same reason as the agent queue: the
     // assignee filter and the queue search both match on names and requester
-    // emails that normalizeTicket() resolves from those caches.
-    withDirectories(function () {
-      fetchTickets(null, function (rows) {
-        adminTickets = rows;
-        adminSelectedId = adminTickets.length ? adminTickets[0].id : null;
-        adminTickets.forEach(function (t) {
-          adminKnownSignature[t.id] = t.status + '|' + (t.assignedAgent || '');
+    // emails that normalizeTicket() resolves from those caches. Wrapped in a
+    // named function so the Retry button (shown on the failed-load state)
+    // can call it again.
+    function loadAdminConsole() {
+      withDirectories(function () {
+        fetchTicketsWithRetry(null, function (rows) {
+          adminTickets = rows;
+          adminSelectedId = adminTickets.length ? adminTickets[0].id : null;
+          adminTickets.forEach(function (t) {
+            adminKnownSignature[t.id] = t.status + '|' + (t.assignedAgent || '');
+          });
+          populateAssigneeFilter();
+          bootstrapAdminConsole();
+        }, function () {
+          bootstrapAdminConsole(true);
         });
-        populateAssigneeFilter();
-        bootstrapAdminConsole();
-      }, function () {
-        bootstrapAdminConsole();
       });
-    });
+    }
+    loadAdminConsole();
+    var adminQueueRetryBtn = document.getElementById('adminQueueRetryBtn');
+    if (adminQueueRetryBtn) adminQueueRetryBtn.addEventListener('click', loadAdminConsole);
 
     // The `storage` listener is gone with the localStorage ticket store; the
     // poll is now the only way this console notices a change made elsewhere.

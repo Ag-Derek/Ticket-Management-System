@@ -69,6 +69,12 @@
             <p class="lead" style="margin:0;">Tickets submitted through the customer portal will show up here.</p>
           </div>
 
+          <div id="adminQueueLoadError" class="queue-empty" style="display:none;">
+            <h2>Couldn't load the queue</h2>
+            <p class="lead" style="margin:0 0 16px;">There was a problem reaching the server. This can happen if the API is just waking up — try again in a few seconds.</p>
+            <button class="btn-ghost" type="button" id="adminQueueRetryBtn">Retry</button>
+          </div>
+
           <div class="dash" id="adminDash">
             <div class="dash-head">
               <div>
