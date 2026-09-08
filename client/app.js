@@ -298,6 +298,31 @@ document.addEventListener('DOMContentLoaded', function () {
       });
   }
 
+  // PATCH /api/tickets/:id/status — body is whatever tickets.js's /status
+  // route expects for the move being made: { status } for a plain transition,
+  // plus resolution_summary for Resolved or escalated_to/escalation_reason
+  // for Escalated. Same shape as assignTicket(): the server is the source of
+  // truth for the resulting row, so callers render whatever comes back
+  // instead of trusting their own local mutation.
+  function changeTicketStatus(ticketId, body, onDone, onError) {
+    fetch(API_BASE + '/api/tickets/' + encodeURIComponent(ticketId) + '/status', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+      .then(function (response) {
+        return response.json().then(function (data) {
+          if (!response.ok) throw new Error(data.error || 'Unable to update the ticket status.');
+          return data;
+        });
+      })
+      .then(function (row) { onDone(normalizeTicket(row)); })
+      .catch(function (err) {
+        console.error('Status change error:', err);
+        if (onError) onError(err);
+      });
+  }
+
   // Swap a server-updated ticket into an in-memory list, in place.
   function replaceTicketIn(list, updated) {
     var idx = list.findIndex(function (x) { return x.id === updated.id; });
@@ -666,10 +691,12 @@ document.addEventListener('DOMContentLoaded', function () {
       return '';
     }
 
-    // Phase 1D-i moved reads to the API; the matching write endpoints land in
-    // 1D-iii (confirm fix / reopen) and 1D-iv (CSAT). Until then this keeps the
-    // page's in-memory copies in sync so the UI still updates on click, but the
-    // change is NOT persisted anywhere and will not survive a reload.
+    // Keeps the page's in-memory copies (`all` / `latest`) in sync with a
+    // ticket the server just confirmed, so the rest of the page's rendering
+    // (history list, filters, active-row highlight) reflects it without a
+    // refetch. Confirm-fix and reopen call this with the server's response,
+    // not a locally-guessed status. (CSAT's own persistence is still open —
+    // see routes/tickets.js's /csat endpoint, not yet called from here.)
     function persistPortalTicket(t) {
       var idx = all.findIndex(function (x) { return x.id === t.id; });
       if (idx !== -1) all[idx] = t;
@@ -794,9 +821,15 @@ document.addEventListener('DOMContentLoaded', function () {
       confirmFixBtn.addEventListener('click', function () {
         var t = all.filter(function (x) { return x.id === currentTicketId; })[0];
         if (!t) return;
-        t.status = 'Closed';
-        persistPortalTicket(t);
-        showTicketDetails(t);
+        confirmFixBtn.disabled = true;
+        changeTicketStatus(t.id, { status: 'Closed' }, function (updated) {
+          confirmFixBtn.disabled = false;
+          persistPortalTicket(updated);
+          showTicketDetails(updated);
+        }, function (err) {
+          confirmFixBtn.disabled = false;
+          alert(err.message || 'Unable to confirm the fix. Please try again.');
+        });
       });
     }
 
@@ -805,9 +838,15 @@ document.addEventListener('DOMContentLoaded', function () {
       reopenBtn.addEventListener('click', function () {
         var t = all.filter(function (x) { return x.id === currentTicketId; })[0];
         if (!t) return;
-        t.status = 'Reopened';
-        persistPortalTicket(t);
-        showTicketDetails(t);
+        reopenBtn.disabled = true;
+        changeTicketStatus(t.id, { status: 'Reopened' }, function (updated) {
+          reopenBtn.disabled = false;
+          persistPortalTicket(updated);
+          showTicketDetails(updated);
+        }, function (err) {
+          reopenBtn.disabled = false;
+          alert(err.message || 'Unable to reopen the ticket. Please try again.');
+        });
       });
     }
 
@@ -1100,13 +1139,6 @@ document.addEventListener('DOMContentLoaded', function () {
     // comes out of the database with those columns already populated.
     var tickets = [];
 
-    // Was: write the whole array back to `docketTickets`. Assignment now goes
-    // through PATCH /api/tickets/:id/assign (1D-ii); the remaining callers are
-    // the status moves, which land in 1D-iii. Until then those still mutate
-    // their in-memory ticket and re-render, so the queue updates on screen but
-    // the change is NOT saved and won't survive a reload.
-    function persistTickets() { /* no-op until 1D-iii */ }
-
     var currentFilter = 'All';
     var searchQuery = '';
     var statusFilter = '';
@@ -1164,12 +1196,15 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function changeStatus(t, toStatus) {
-      if (!isMine(t)) return false;
-      if (!canTransition(t.status, toStatus)) return false;
-      t.status = toStatus;
-      persistTickets();
-      renderStats(); renderDetail(); renderList();
-      return true;
+      if (!isMine(t)) return;
+      if (!canTransition(t.status, toStatus)) return;
+      changeTicketStatus(t.id, { status: toStatus }, function (updated) {
+        replaceTicketIn(tickets, updated);
+        agentKnownSignature[updated.id] = updated.status + '|' + (updated.assignedAgent || '');
+        renderStats(); renderDetail(); renderList();
+      }, function (err) {
+        alert(err.message || 'Unable to update the ticket status.');
+      });
     }
 
     // Only the agent a ticket is currently assigned to may move its status,
@@ -1371,12 +1406,21 @@ document.addEventListener('DOMContentLoaded', function () {
       var reason = escalateReason.value.trim();
       if (!to || !reason) return;
       if (!canTransition(t.status, 'Escalated')) { closePanels(); return; }
-      t.status = 'Escalated';
-      t.escalation = { to: to, reason: reason, by: agent.name, at: new Date().toISOString() };
-      persistTickets();
-      addInternalNote(t.id, 'Escalated to ' + to + ' — ' + reason);
-      closePanels();
-      renderStats(); renderDetail(); renderList();
+
+      var escalateConfirmBtnEl = document.getElementById('escalateConfirmBtn');
+      clearPanelError(escalatePanel);
+      escalateConfirmBtnEl.disabled = true;
+      changeTicketStatus(t.id, { status: 'Escalated', escalated_to: to, escalation_reason: reason }, function (updated) {
+        escalateConfirmBtnEl.disabled = false;
+        replaceTicketIn(tickets, updated);
+        agentKnownSignature[updated.id] = updated.status + '|' + (updated.assignedAgent || '');
+        addInternalNote(updated.id, 'Escalated to ' + to + ' — ' + reason);
+        closePanels();
+        renderStats(); renderDetail(); renderList();
+      }, function (err) {
+        escalateConfirmBtnEl.disabled = false;
+        showPanelError(escalatePanel, err.message || 'Unable to escalate this ticket.');
+      });
     });
 
     // Resolving requires a summary — this is the only path that can set a
@@ -1396,12 +1440,20 @@ document.addEventListener('DOMContentLoaded', function () {
         }
         if (resolveSummaryField) resolveSummaryField.classList.remove('invalid');
         if (!canTransition(t.status, 'Resolved')) { closePanels(); return; }
-        t.status = 'Resolved';
-        t.resolutionSummary = { text: summary, by: agent.name, at: new Date().toISOString() };
-        persistTickets();
-        addInternalNote(t.id, 'Marked resolved — ' + summary);
-        closePanels();
-        renderStats(); renderDetail(); renderList();
+
+        clearPanelError(resolvePanel);
+        resolveConfirmBtn.disabled = true;
+        changeTicketStatus(t.id, { status: 'Resolved', resolution_summary: summary }, function (updated) {
+          resolveConfirmBtn.disabled = false;
+          replaceTicketIn(tickets, updated);
+          agentKnownSignature[updated.id] = updated.status + '|' + (updated.assignedAgent || '');
+          addInternalNote(updated.id, 'Marked resolved — ' + summary);
+          closePanels();
+          renderStats(); renderDetail(); renderList();
+        }, function (err) {
+          resolveConfirmBtn.disabled = false;
+          showPanelError(resolvePanel, err.message || 'Unable to resolve this ticket.');
+        });
       });
     }
 
