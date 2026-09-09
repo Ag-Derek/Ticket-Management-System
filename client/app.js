@@ -345,6 +345,101 @@ document.addEventListener('DOMContentLoaded', function () {
       });
   }
 
+  // ---- Ticket comments (phase 1D-v) ----
+  // Public messages, reassignment notes, escalation notes, and resolution
+  // notes now live server-side in `ticket_comments` via GET/POST
+  // /api/tickets/:id/comments, replacing the old `docketChat:<id>`
+  // localStorage thread. That thread never left the browser that wrote it —
+  // an agent on a different machine than the one a customer used could never
+  // see their messages, and vice versa. Routing everything through the API
+  // means every viewer of a ticket (customer, any agent, any admin) now sees
+  // the same conversation.
+
+  // The API returns SQLite's `datetime('now')` as "YYYY-MM-DD HH:MM:SS" (UTC,
+  // no 'T' separator, no zone) — coerce it into something `Date` parses
+  // correctly before formatting, the same h:mm AM/PM format the old chat used.
+  function formatCommentTime(raw) {
+    var d = new Date(String(raw || '').replace(' ', 'T') + 'Z');
+    if (isNaN(d.getTime())) return '';
+    var h = d.getHours(); var m = d.getMinutes();
+    var ampm = h >= 12 ? 'PM' : 'AM';
+    h = h % 12; if (h === 0) h = 12;
+    return h + ':' + (m < 10 ? '0' : '') + m + ' ' + ampm;
+  }
+
+  // Bridges a `ticket_comments` row into the shape the chat thread (and the
+  // internal-note callers below) already render: `from`/`name` line up with
+  // author_type/author_name, and author_type's values ('customer'/'agent'/
+  // 'admin') already match the chat page's own `chatRole` values 1:1.
+  function normalizeComment(c) {
+    return {
+      id: c.id,
+      from: c.author_type,
+      name: c.author_name,
+      text: c.body,
+      time: formatCommentTime(c.created_at),
+      visibility: c.visibility,
+      files: Array.isArray(c.files) ? c.files : []
+    };
+  }
+
+  // GET /api/tickets/:id/comments — fetched without a `visibility` filter so
+  // agent/admin viewers get both public and internal comments in one call;
+  // the chat thread itself filters internal notes out for the customer role,
+  // same as before.
+  function fetchComments(ticketId, onDone, onError) {
+    fetch(API_BASE + '/api/tickets/' + encodeURIComponent(ticketId) + '/comments')
+      .then(function (response) {
+        if (!response.ok) throw new Error('Unable to load messages.');
+        return response.json();
+      })
+      .then(function (rows) { onDone(rows.map(normalizeComment)); })
+      .catch(function (err) {
+        console.error('Comment load error:', err);
+        if (onError) onError(err);
+      });
+  }
+
+  // POST /api/tickets/:id/comments. `visibility` defaults to 'public'
+  // server-side; the server also rejects an internal comment authored by a
+  // customer, matching the chat composer's own toggle being agent/admin-only.
+  function postComment(ticketId, authorType, authorName, text, visibility, files, onDone, onError) {
+    fetch(API_BASE + '/api/tickets/' + encodeURIComponent(ticketId) + '/comments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        author_type: authorType,
+        author_name: authorName,
+        visibility: visibility || 'public',
+        body: text || '',
+        files: files && files.length ? files : undefined
+      })
+    })
+      .then(function (response) {
+        return response.json().then(function (data) {
+          if (!response.ok) throw new Error(data.error || 'Unable to send that message.');
+          return data;
+        });
+      })
+      .then(function (row) { onDone(normalizeComment(row)); })
+      .catch(function (err) {
+        console.error('Comment post error:', err);
+        if (onError) onError(err);
+      });
+  }
+
+  // Shorthand for the system notes the reassign/escalate/resolve/assign
+  // flows leave behind — same internal visibility the chat's own toggle
+  // uses, just posted directly instead of typed into the composer. Best
+  // effort: the underlying assignment/status change has already succeeded
+  // by the time this is called, so a note failure is logged, not surfaced,
+  // rather than rolling back or blocking on it.
+  function postInternalNote(ticketId, authorType, authorName, text) {
+    postComment(ticketId, authorType, authorName, text, 'internal', null, function () {}, function (err) {
+      console.error('Internal note error:', err);
+    });
+  }
+
   // Swap a server-updated ticket into an in-memory list, in place.
   function replaceTicketIn(list, updated) {
     var idx = list.findIndex(function (x) { return x.id === updated.id; });
@@ -1326,22 +1421,12 @@ document.addEventListener('DOMContentLoaded', function () {
     // the time a click opens the panel.
     var ESCALATION_TARGETS = ['Tier 2 Support', 'Team Lead', 'Engineering', 'Network Operations Center'];
 
-    function formatNoteTime(d) {
-      var h = d.getHours(); var m = d.getMinutes();
-      var ampm = h >= 12 ? 'PM' : 'AM';
-      h = h % 12; if (h === 0) h = 12;
-      return h + ':' + (m < 10 ? '0' : '') + m + ' ' + ampm;
-    }
-
-    // Drops an internal-only note into the ticket's existing chat thread, so
-    // reassignments and escalations leave the same kind of trail agents already
-    // see for internal comments — no separate history UI needed.
+    // Drops an internal-only note into the ticket's real comment thread (see
+    // postInternalNote above), so reassignments/escalations/resolutions leave
+    // the same kind of trail agents already see for internal comments — now
+    // visible to every agent/admin viewing this ticket, not just this browser.
     function addInternalNote(ticketId, text) {
-      var chatKey = 'docketChat:' + ticketId;
-      var msgs = [];
-      try { msgs = JSON.parse(localStorage.getItem(chatKey)) || []; } catch (e) { msgs = []; }
-      msgs.push({ from: 'agent', name: agent.name, text: text, time: formatNoteTime(new Date()), visibility: 'internal' });
-      localStorage.setItem(chatKey, JSON.stringify(msgs));
+      postInternalNote(ticketId, 'agent', agent.name, text);
     }
 
     var reassignPanel = document.getElementById('reassignPanel');
@@ -1436,7 +1521,6 @@ document.addEventListener('DOMContentLoaded', function () {
         var noteText = toName
           ? (wasUnassigned ? 'Assigned to ' + toName : 'Reassigned from ' + from + ' to ' + toName)
           : 'Unassigned (was ' + from + ')';
-        // Still a localStorage internal note until 1D-v moves comments.
         addInternalNote(updated.id, noteText + (note ? ' — ' + note : '.'));
         closePanels();
         renderStats(); renderDetail(); renderList();
@@ -1882,11 +1966,13 @@ document.addEventListener('DOMContentLoaded', function () {
       window.location.href = chatRole === 'agent' ? 'agent-dashboard.html' : chatRole === 'admin' ? 'admin-dashboard.html' : 'portal.html';
     });
 
-    // The chat header needs the ticket's subject and priority. Those used to be
-    // read out of the `docketTickets` localStorage array, which 1D-i removed —
-    // so this fetches the one ticket from the API instead (see initChat below).
-    // The messages themselves still live in `docketChat:<id>` until 1D-v.
+    // The chat header needs the ticket's subject and priority, fetched from
+    // the API below. The messages themselves are now fetched the same way
+    // (GET /api/tickets/:id/comments) instead of a `docketChat:<id>`
+    // localStorage thread, so every viewer of this ticket sees the same
+    // conversation regardless of which browser wrote each message.
     var chatTicket = null;
+    var chatMessages = [];
 
     var chatInput = document.getElementById('chatInput');
     var chatSendBtn = document.getElementById('chatSendBtn');
@@ -1931,28 +2017,11 @@ document.addEventListener('DOMContentLoaded', function () {
       });
     }
 
-    // Keeps the ticket's "files attached" count (shown on the portal/agent dashboard) in sync
-    // whenever someone attaches files from the chat thread, not just at creation time.
-    // Dead until 1D-v: this bumped the attachment count on the `docketTickets`
-    // record, which no longer exists, so it now finds nothing and writes
-    // nothing. Harmless, but it does mean a public chat attachment stops
-    // incrementing the ticket's file count until the comments phase moves this
-    // to the API (the server already computes attachment_count correctly).
-    function bumpTicketFileCount(ticketId, addCount) {
-      var allT = [];
-      try { allT = JSON.parse(localStorage.getItem('docketTickets')) || []; } catch (e) { allT = []; }
-      var match = allT.filter(function (x) { return x.id === ticketId; })[0];
-      if (match) {
-        match.files = (match.files || 0) + addCount;
-        localStorage.setItem('docketTickets', JSON.stringify(allT));
-      }
-      var latestT = null;
-      try { latestT = JSON.parse(localStorage.getItem('docketLatestTicket')); } catch (e) { latestT = null; }
-      if (latestT && latestT.id === ticketId) {
-        latestT.files = (latestT.files || 0) + addCount;
-        localStorage.setItem('docketLatestTicket', JSON.stringify(latestT));
-      }
-    }
+    // The ticket's "files attached" count is computed server-side from
+    // ticket_attachments (see attachmentCount() in routes/tickets.js), which
+    // already only counts a chat attachment once it's on a *public* comment —
+    // so there's nothing to do here on send; the portal/agent dashboard picks
+    // it up next time they fetch the ticket.
 
     if ((chatRole === 'agent' || chatRole === 'admin') && visToggle) {
       visToggle.style.display = 'flex';
@@ -1969,6 +2038,63 @@ document.addEventListener('DOMContentLoaded', function () {
       });
     }
 
+    // Renders whatever `chatMessages` currently holds (kept in memory,
+    // refreshed from the API by the initial load and the poll below).
+    function renderChatMessages() {
+      var msgs = chatMessages;
+      // Customers only ever see public comments; internal notes are agent/team-only.
+      if (chatRole === 'customer') {
+        msgs = msgs.filter(function (m) { return m.visibility !== 'internal'; });
+      }
+      chatThread.innerHTML = '';
+      if (!msgs.length) {
+        chatThread.innerHTML = '<p class="chat-empty">No messages yet — say hello or share the steps to fix this.</p>';
+        return;
+      }
+      msgs.forEach(function (m) {
+        var isInternal = m.visibility === 'internal';
+        var mine = m.from === chatRole;
+        var bubble = document.createElement('div');
+        bubble.className = 'chat-bubble ' + (isInternal ? 'internal' : (mine ? 'out' : 'in'));
+        var label = isInternal
+          ? (mine ? 'You · Internal note' : chatEscapeHtml(m.name) + ' · Internal note')
+          : (mine ? 'You' : chatEscapeHtml(m.name));
+        var filesHtml = '';
+        if (m.files && m.files.length) {
+          filesHtml = '<div class="chat-attachments">' + m.files.map(function (f) {
+            return '<span class="chat-attachment-chip">📎 ' + chatEscapeHtml(f) + '</span>';
+          }).join('') + '</div>';
+        }
+        bubble.innerHTML =
+          '<span class="chat-name">' + label + '</span>' +
+          (m.text ? chatEscapeHtml(m.text) : '') +
+          filesHtml +
+          '<span class="chat-time">' + m.time + '</span>';
+        chatThread.appendChild(bubble);
+      });
+      chatThread.scrollTop = chatThread.scrollHeight;
+    }
+
+    function sendChatMessage() {
+      var text = chatInput.value.trim();
+      if (!text && !chatFiles.length) return;
+      var visibility = ((chatRole === 'agent' || chatRole === 'admin') && chatVisibility === 'internal') ? 'internal' : 'public';
+      var filesToSend = chatFiles.slice();
+
+      chatSendBtn.disabled = true;
+      postComment(chatTicket.id, chatRole, chatActorName, text, visibility, filesToSend, function (comment) {
+        chatSendBtn.disabled = false;
+        chatMessages.push(comment);
+        chatInput.value = '';
+        chatFiles = [];
+        renderChatFiles();
+        renderChatMessages();
+      }, function (err) {
+        chatSendBtn.disabled = false;
+        alert(err.message || 'Unable to send that message. Please try again.');
+      });
+    }
+
     function initChat() {
       if (!chatTicket) {
         document.getElementById('chatTicketId').textContent = 'Ticket not found';
@@ -1977,109 +2103,55 @@ document.addEventListener('DOMContentLoaded', function () {
         chatInput.disabled = true;
         chatSendBtn.disabled = true;
         if (chatAttachBtn) chatAttachBtn.disabled = true;
-        chatThread.innerHTML = '<p class="chat-empty">This ticket could not be found in this browser.</p>';
-      } else {
-        document.getElementById('chatTicketId').textContent = chatTicket.id;
-        document.getElementById('chatTicketSubject').textContent = chatTicket.subject;
-        document.getElementById('chatTicketPriority').textContent = chatTicket.priority;
-
-        var chatKey = 'docketChat:' + chatTicket.id;
-
-        var escapeHtml = function (str) {
-          return str.replace(/[&<>"']/g, function (c) {
-            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
-          });
-        };
-
-        var formatChatTime = function (d) {
-          var h = d.getHours(); var m = d.getMinutes();
-          var ampm = h >= 12 ? 'PM' : 'AM';
-          h = h % 12; if (h === 0) h = 12;
-          return h + ':' + (m < 10 ? '0' : '') + m + ' ' + ampm;
-        };
-
-        var loadChatMessages = function () {
-          var msgs = [];
-          try { msgs = JSON.parse(localStorage.getItem(chatKey)) || []; } catch (e) { msgs = []; }
-          return msgs;
-        };
-
-        var renderChatMessages = function () {
-          var msgs = loadChatMessages();
-          // Customers only ever see public comments; internal notes are agent/team-only.
-          if (chatRole === 'customer') {
-            msgs = msgs.filter(function (m) { return m.visibility !== 'internal'; });
-          }
-          chatThread.innerHTML = '';
-          if (!msgs.length) {
-            chatThread.innerHTML = '<p class="chat-empty">No messages yet — say hello or share the steps to fix this.</p>';
-            return;
-          }
-          msgs.forEach(function (m) {
-            var isInternal = m.visibility === 'internal';
-            var mine = m.from === chatRole;
-            var bubble = document.createElement('div');
-            bubble.className = 'chat-bubble ' + (isInternal ? 'internal' : (mine ? 'out' : 'in'));
-            var label = isInternal
-              ? (mine ? 'You · Internal note' : escapeHtml(m.name) + ' · Internal note')
-              : (mine ? 'You' : escapeHtml(m.name));
-            var filesHtml = '';
-            if (m.files && m.files.length) {
-              filesHtml = '<div class="chat-attachments">' + m.files.map(function (f) {
-                return '<span class="chat-attachment-chip">📎 ' + escapeHtml(f) + '</span>';
-              }).join('') + '</div>';
-            }
-            bubble.innerHTML =
-              '<span class="chat-name">' + label + '</span>' +
-              (m.text ? escapeHtml(m.text) : '') +
-              filesHtml +
-              '<span class="chat-time">' + m.time + '</span>';
-            chatThread.appendChild(bubble);
-          });
-          chatThread.scrollTop = chatThread.scrollHeight;
-        };
-
-        var sendChatMessage = function () {
-          var text = chatInput.value.trim();
-          if (!text && !chatFiles.length) return;
-          var msgs = loadChatMessages();
-          var visibility = ((chatRole === 'agent' || chatRole === 'admin') && chatVisibility === 'internal') ? 'internal' : 'public';
-          var msg = { from: chatRole, name: chatActorName, text: text, time: formatChatTime(new Date()), visibility: visibility };
-          if (chatFiles.length) msg.files = chatFiles.slice();
-          msgs.push(msg);
-          localStorage.setItem(chatKey, JSON.stringify(msgs));
-          chatInput.value = '';
-          if (chatFiles.length) {
-            // Internal notes are agent/team-only, so their attachments shouldn't count toward
-            // the customer-visible "files attached" total shown on the portal.
-            if (visibility === 'public') bumpTicketFileCount(chatTicket.id, chatFiles.length);
-            chatFiles = [];
-            renderChatFiles();
-          }
-          renderChatMessages();
-        };
-
-        chatSendBtn.addEventListener('click', sendChatMessage);
-        chatInput.addEventListener('keydown', function (e) {
-          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage(); }
-        });
-
-        renderChatMessages();
+        chatThread.innerHTML = '<p class="chat-empty">This ticket could not be found.</p>';
+        return;
       }
+      document.getElementById('chatTicketId').textContent = chatTicket.id;
+      document.getElementById('chatTicketSubject').textContent = chatTicket.subject;
+      document.getElementById('chatTicketPriority').textContent = chatTicket.priority;
+
+      chatSendBtn.addEventListener('click', sendChatMessage);
+      chatInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage(); }
+      });
+
+      renderChatMessages();
     }
 
     // GET /api/tickets/:id — a 404 (or a bad ?ticket= param) falls through to
     // initChat's existing "not found" branch, which disables the composer.
+    // Comments are only fetched once the ticket itself is confirmed to exist.
     fetch(API_BASE + '/api/tickets/' + encodeURIComponent(chatTicketId))
       .then(function (response) { return response.ok ? response.json() : null; })
       .then(function (row) {
-        if (row) chatTicket = normalizeTicket(row);
-        initChat();
+        if (!row) { initChat(); return; }
+        chatTicket = normalizeTicket(row);
+        fetchComments(chatTicket.id, function (comments) {
+          chatMessages = comments;
+          initChat();
+        }, function () {
+          chatMessages = [];
+          initChat();
+        });
       })
       .catch(function (err) {
         console.error('Chat ticket load error:', err);
         initChat();
       });
+
+    // Live updates: the other side of this conversation (customer vs. agent/
+    // admin) is very likely on a different device entirely, so — same
+    // pattern as the ticket queues — poll for new comments rather than
+    // relying on a same-browser signal that will never fire here.
+    setInterval(function () {
+      if (!chatTicket) return;
+      fetchComments(chatTicket.id, function (comments) {
+        if (comments.length !== chatMessages.length) {
+          chatMessages = comments;
+          renderChatMessages();
+        }
+      });
+    }, 4000);
   }
 
   // ---- Portal topbar actions ----
@@ -2167,20 +2239,12 @@ document.addEventListener('DOMContentLoaded', function () {
       document.getElementById('adminSidebarAgentCount').textContent = loadAgents().length;
     }
 
-    function formatAdminNoteTime(d) {
-      var h = d.getHours(); var m = d.getMinutes();
-      var ampm = h >= 12 ? 'PM' : 'AM';
-      h = h % 12; if (h === 0) h = 12;
-      return h + ':' + (m < 10 ? '0' : '') + m + ' ' + ampm;
-    }
     // Same internal-note trail agents leave for reassign/escalate, so an admin's
-    // assignment shows up in the ticket's existing chat thread too.
+    // assignment shows up in the ticket's real comment thread too. Posted as
+    // author_type 'admin' with "(Admin)" folded into the name so agents
+    // viewing the same thread can tell it apart from a regular agent note.
     function addAdminNote(ticketId, text) {
-      var chatKey = 'docketChat:' + ticketId;
-      var msgs = [];
-      try { msgs = JSON.parse(localStorage.getItem(chatKey)) || []; } catch (e) { msgs = []; }
-      msgs.push({ from: 'agent', name: adminUser.name + ' (Admin)', text: text, time: formatAdminNoteTime(new Date()), visibility: 'internal' });
-      localStorage.setItem(chatKey, JSON.stringify(msgs));
+      postInternalNote(ticketId, 'admin', adminUser.name + ' (Admin)', text);
     }
 
     var adminAssignPanel = document.getElementById('adminAssignPanel');
@@ -2234,7 +2298,6 @@ document.addEventListener('DOMContentLoaded', function () {
         var noteText = toName
           ? (from === 'Unassigned' ? 'Assigned to ' + toName : 'Reassigned from ' + from + ' to ' + toName)
           : 'Unassigned (was ' + from + ')';
-        // Still a localStorage internal note until 1D-v moves comments.
         addAdminNote(updated.id, noteText + ' by an admin' + (note ? ' — ' + note : '.'));
         closeAdminAssignPanel();
         renderAdminStats(); renderAdminDetail(); renderAdminList();
