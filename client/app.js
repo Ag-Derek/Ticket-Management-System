@@ -323,6 +323,28 @@ document.addEventListener('DOMContentLoaded', function () {
       });
   }
 
+  // PATCH /api/tickets/:id/csat — same pattern as assignTicket()/
+  // changeTicketStatus(): the server is the source of truth, so the caller
+  // renders whatever row comes back instead of trusting its own local `t.csat`.
+  function submitCsat(ticketId, rating, comment, onDone, onError) {
+    fetch(API_BASE + '/api/tickets/' + encodeURIComponent(ticketId) + '/csat', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ csat_rating: rating, csat_comment: comment || null })
+    })
+      .then(function (response) {
+        return response.json().then(function (data) {
+          if (!response.ok) throw new Error(data.error || 'Unable to submit feedback.');
+          return data;
+        });
+      })
+      .then(function (row) { onDone(normalizeTicket(row)); })
+      .catch(function (err) {
+        console.error('CSAT submit error:', err);
+        if (onError) onError(err);
+      });
+  }
+
   // Swap a server-updated ticket into an in-memory list, in place.
   function replaceTicketIn(list, updated) {
     var idx = list.findIndex(function (x) { return x.id === updated.id; });
@@ -922,9 +944,15 @@ document.addEventListener('DOMContentLoaded', function () {
         if (!csatSelected) return;
         var t = all.filter(function (x) { return x.id === currentTicketId; })[0];
         if (!t) return;
-        t.csat = { score: csatSelected, comment: (csatCommentEl ? csatCommentEl.value.trim() : ''), submittedAt: new Date().toISOString() };
-        persistPortalTicket(t);
-        showTicketDetails(t);
+        var comment = csatCommentEl ? csatCommentEl.value.trim() : '';
+        csatSubmitBtn.disabled = true;
+        submitCsat(t.id, csatSelected, comment, function (updated) {
+          replaceTicketIn(all, updated);
+          showTicketDetails(updated);
+        }, function () {
+          csatSubmitBtn.disabled = false;
+          alert('Could not submit your feedback — please try again.');
+        });
       });
     }
 
