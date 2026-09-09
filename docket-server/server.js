@@ -7,6 +7,12 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Root route — just so opening the bare Render URL in a browser doesn't
+// look like the server is down. The frontend never calls this directly.
+app.get('/', (req, res) => {
+  res.json({ status: 'ok', message: 'Docket API is running' });
+});
+
 // Health check — confirms the server is up and the DB file is readable.
 app.get('/api/health', (req, res) => {
   const counts = {
