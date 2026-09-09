@@ -36,6 +36,39 @@ document.addEventListener('DOMContentLoaded', function () {
     return prefix + '-2026-' + String(Date.now()).slice(-6);
   }
 
+  // ---- Session storage: agent/admin "keep me signed in" ----
+  // Both login forms offer a "keep me signed in on this device" checkbox,
+  // but everything used to go straight into localStorage regardless of
+  // whether it was checked — localStorage persists indefinitely either way,
+  // so the checkbox had no actual effect. Checked now means localStorage
+  // (survives closing the browser, same as before); unchecked means
+  // sessionStorage (cleared when the tab/browser closes, like an ordinary
+  // login session). saveSession clears the *other* storage on write so a
+  // stale copy can't linger there from an earlier sign-in made with the
+  // opposite choice; readSession checks both so a session written either
+  // way is still found.
+  function saveSession(key, value, persist) {
+    var raw = JSON.stringify(value);
+    if (persist) {
+      localStorage.setItem(key, raw);
+      sessionStorage.removeItem(key);
+    } else {
+      sessionStorage.setItem(key, raw);
+      localStorage.removeItem(key);
+    }
+  }
+
+  function readSession(key) {
+    var raw = localStorage.getItem(key) || sessionStorage.getItem(key);
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch (e) { return null; }
+  }
+
+  function clearSession(key) {
+    localStorage.removeItem(key);
+    sessionStorage.removeItem(key);
+  }
+
   // Renders a read-only row of "📎 filename" chips (used for the attachments a
   // ticket was filed with, on the portal/agent/admin dashboards). No-op if the
   // container isn't on this page, or there's nothing to show.
@@ -579,12 +612,11 @@ document.addEventListener('DOMContentLoaded', function () {
         agentLoginForm.style.display = 'none';
         document.getElementById('agentStub').classList.add('show');
 
-        localStorage.setItem('docketAgent', JSON.stringify({
+        saveSession('docketAgent', {
           id: record.id,
           name: record.name,
-          email: record.email,
-          keepSignedIn: document.getElementById('keepSignedIn').checked
-        }));
+          email: record.email
+        }, document.getElementById('keepSignedIn').checked);
       }, function (err) {
         console.error('Agent sign-in error:', err);
         submitAgentLoginBtn.disabled = false;
@@ -647,12 +679,11 @@ document.addEventListener('DOMContentLoaded', function () {
           adminLoginForm.style.display = 'none';
           document.getElementById('adminStub').classList.add('show');
 
-          localStorage.setItem('docketAdmin', JSON.stringify({
+          saveSession('docketAdmin', {
             id: admin.id,
             name: admin.name,
-            email: admin.email,
-            keepSignedIn: document.getElementById('adminKeepSignedIn').checked
-          }));
+            email: admin.email
+          }, document.getElementById('adminKeepSignedIn').checked);
         })
         .catch(function (err) {
           emailField.classList.add('invalid');
@@ -1255,8 +1286,7 @@ document.addEventListener('DOMContentLoaded', function () {
   // ---- Agent queue (agent-dashboard.html): stats + filterable list + ticket actions ----
   var agentQueue = document.getElementById('agentQueue');
   if (agentQueue) {
-    var agent = null;
-    try { agent = JSON.parse(localStorage.getItem('docketAgent')); } catch (e) { agent = null; }
+    var agent = readSession('docketAgent');
     if (!agent) {
       window.location.href = 'agent-login.html';
       return;
@@ -1272,7 +1302,7 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('agentChipName').textContent = agent.name.split(' ')[0];
 
     document.getElementById('agentLogoutBtn').addEventListener('click', function () {
-      localStorage.removeItem('docketAgent');
+      clearSession('docketAgent');
       window.location.href = 'agent-login.html';
     });
 
@@ -1949,10 +1979,10 @@ document.addEventListener('DOMContentLoaded', function () {
 
     var chatActor = null;
     if (chatRole === 'agent') {
-      try { chatActor = JSON.parse(localStorage.getItem('docketAgent')); } catch (e) { chatActor = null; }
+      chatActor = readSession('docketAgent');
       if (!chatActor) { window.location.href = 'agent-login.html'; return; }
     } else if (chatRole === 'admin') {
-      try { chatActor = JSON.parse(localStorage.getItem('docketAdmin')); } catch (e) { chatActor = null; }
+      chatActor = readSession('docketAdmin');
       if (!chatActor) { window.location.href = 'admin-login.html'; return; }
     } else {
       try { chatActor = JSON.parse(localStorage.getItem('docketUser')); } catch (e) { chatActor = null; }
@@ -2178,8 +2208,7 @@ document.addEventListener('DOMContentLoaded', function () {
   // any ticket regardless of who currently holds it, and manage the agent directory ----
   var adminConsole = document.getElementById('adminConsole');
   if (adminConsole) {
-    var adminUser = null;
-    try { adminUser = JSON.parse(localStorage.getItem('docketAdmin')); } catch (e) { adminUser = null; }
+    var adminUser = readSession('docketAdmin');
     if (!adminUser) {
       window.location.href = 'admin-login.html';
       return;
@@ -2194,7 +2223,7 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('adminChipName').textContent = adminUser.name.split(' ')[0];
 
     document.getElementById('adminLogoutBtn').addEventListener('click', function () {
-      localStorage.removeItem('docketAdmin');
+      clearSession('docketAdmin');
       window.location.href = 'admin-login.html';
     });
 
