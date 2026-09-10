@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../db/connection');
 const { nextId } = require('../utils/ids');
 const { ensureAttachmentColumns } = require('../db/migrate-attachments');
+const { saveAttachmentFile } = require('../utils/attachment-storage');
 
 const router = express.Router();
 
@@ -10,11 +11,6 @@ ensureAttachmentColumns(db);
 
 const VALID_CATEGORIES = ['Network', 'Application', 'Hardware', 'Access & Identity'];
 const VALID_PRIORITIES = ['Low', 'Medium', 'High', 'Critical'];
-
-// Matches the client's own cap in app.js's readFileAsAttachment — kept in
-// sync manually since the two run in different processes. Decoded size is
-// what's checked, not the (larger) base64 string length.
-const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 
 // Pulled directly from app.js's teamByCategory / slaByPriority — the server
 // is now the single source of truth for these, so the client no longer
@@ -72,10 +68,10 @@ function attachmentCount(ticketId) {
 }
 
 // Creation-time attachments only (comment_id IS NULL) — chat attachments
-// travel with their comment instead (see comments.js). Content itself is
-// deliberately left out here; the id is enough for the client to build a
-// GET /api/attachments/:id link, and the ticket payload would otherwise
-// balloon with every file's base64 on it.
+// travel with their comment instead (see comments.js). stored_path is a
+// server filesystem path, not something the client needs or should see —
+// the client only ever needs the id, to build a GET /api/attachments/:id
+// download link.
 function ticketAttachments(ticketId) {
   return db.prepare(
     `SELECT id, filename, mime_type, size_bytes FROM ticket_attachments
@@ -98,28 +94,26 @@ function ticketWithComments(id) {
   return { ...ticket, attachment_count: attachmentCount(id), attachments: ticketAttachments(id), comments };
 }
 
-// Validates one incoming attachment payload. Accepts the new
-// { filename, content_base64, mime_type? } shape; also tolerates a bare
-// filename string (no content) so anything still calling the old
-// filenames-only contract doesn't hard-fail — it just won't be
-// downloadable, same as attachments recorded before this feature existed.
-function normalizeIncomingAttachment(a) {
+// Validates one incoming attachment payload and — if it carries content —
+// writes it to disk immediately, before any DB row exists for it. Accepts
+// the { filename, content_base64, mime_type? } shape the client sends;
+// also tolerates a bare filename string or an object with no
+// content_base64 (nothing to write, so stored_path stays null — same as
+// an attachment recorded before real file storage existed, or record of a
+// name whose upload failed).
+function normalizeIncomingAttachment(ticketId, a) {
   if (!a) return null;
   if (typeof a === 'string') {
-    return a.trim() ? { filename: a.trim(), content_base64: null, mime_type: null, size_bytes: null } : null;
+    const filename = a.trim();
+    return filename ? { filename, mime_type: null, size_bytes: null, stored_path: null } : null;
   }
   const filename = a.filename && String(a.filename).trim();
   if (!filename) return null;
-  const content = a.content_base64 || null;
-  let sizeBytes = null;
-  if (content) {
-    // Decoded byte length, not the (larger) base64 string length.
-    sizeBytes = Buffer.from(content, 'base64').length;
-    if (sizeBytes > MAX_ATTACHMENT_BYTES) {
-      throw new Error(`"${filename}" is larger than 5MB — attachments are capped at 5MB each.`);
-    }
+  if (!a.content_base64) {
+    return { filename, mime_type: a.mime_type || null, size_bytes: null, stored_path: null };
   }
-  return { filename, content_base64: content, mime_type: a.mime_type || null, size_bytes: sizeBytes };
+  const { storedPath, sizeBytes } = saveAttachmentFile(ticketId, filename, a.content_base64);
+  return { filename, mime_type: a.mime_type || null, size_bytes: sizeBytes, stored_path: storedPath };
 }
 
 // POST /api/tickets
@@ -141,18 +135,22 @@ router.post('/', (req, res) => {
   const user = db.prepare('SELECT id FROM users WHERE id = ?').get(user_id);
   if (!user) return res.status(404).json({ error: 'user_id does not exist' });
 
+  const id = nextId(db, 'tickets', 'TKT');
+  const team = TEAM_BY_CATEGORY[category];
+  const sla = slaSummary(priority);
+
+  // Files are written to disk before the ticket row exists — a size-cap
+  // failure here means the ticket is never created at all, rather than
+  // ending up with a ticket that references a half-written attachment
+  // list.
   let normalizedAttachments;
   try {
     normalizedAttachments = Array.isArray(attachments)
-      ? attachments.map(normalizeIncomingAttachment).filter(Boolean)
+      ? attachments.map((a) => normalizeIncomingAttachment(id, a)).filter(Boolean)
       : [];
   } catch (err) {
     return res.status(400).json({ error: err.message });
   }
-
-  const id = nextId(db, 'tickets', 'TKT');
-  const team = TEAM_BY_CATEGORY[category];
-  const sla = slaSummary(priority);
 
   const insertTicket = db.transaction(() => {
     db.prepare(
@@ -163,11 +161,11 @@ router.post('/', (req, res) => {
     ).run(id, user_id, subject.trim(), description.trim(), category, priority, affected_service || null, team, sla);
 
     const insertAttachment = db.prepare(
-      `INSERT INTO ticket_attachments (ticket_id, filename, content_base64, mime_type, size_bytes)
+      `INSERT INTO ticket_attachments (ticket_id, filename, mime_type, size_bytes, stored_path)
        VALUES (?, ?, ?, ?, ?)`
     );
     normalizedAttachments.forEach((a) => {
-      insertAttachment.run(id, a.filename, a.content_base64, a.mime_type, a.size_bytes);
+      insertAttachment.run(id, a.filename, a.mime_type, a.size_bytes, a.stored_path);
     });
   });
   insertTicket();

@@ -1,6 +1,7 @@
 const express = require('express');
 const db = require('../db/connection');
 const { ensureAttachmentColumns } = require('../db/migrate-attachments');
+const { saveAttachmentFile } = require('../utils/attachment-storage');
 
 // mergeParams so this router can read :ticketId from the parent
 // tickets router it's mounted under (see server.js).
@@ -10,10 +11,6 @@ const router = express.Router({ mergeParams: true });
 // called from tickets.js; either one running first is fine, it's a no-op
 // once the columns exist.
 ensureAttachmentColumns(db);
-
-// Matches app.js's own cap in readFileAsAttachment — kept in sync manually
-// since the two run in different processes.
-const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 
 // GET /api/tickets/:ticketId/comments?visibility=public|internal
 router.get('/', (req, res) => {
@@ -31,8 +28,9 @@ router.get('/', (req, res) => {
   sql += ' ORDER BY created_at ASC';
 
   const comments = db.prepare(sql).all(...params);
-  // Files now carry an id (so the client can build a download link) and
-  // filename, not just a bare filename string.
+  // Files carry an id (so the client can build a download link) and
+  // filename only — stored_path is a server filesystem path and never
+  // goes to the client.
   const withFiles = comments.map((c) => ({
     ...c,
     files: db.prepare('SELECT id, filename FROM ticket_attachments WHERE comment_id = ?').all(c.id)
@@ -40,25 +38,24 @@ router.get('/', (req, res) => {
   res.json(withFiles);
 });
 
-// Validates one incoming attachment payload — same contract as
-// tickets.js's normalizeIncomingAttachment (kept as a separate copy here
-// since these two routers don't currently share a utils file for it).
-function normalizeIncomingAttachment(a) {
+// Validates one incoming attachment payload and — if it carries content —
+// writes it to disk immediately. Same contract as tickets.js's
+// normalizeIncomingAttachment (kept as a separate copy here since these
+// two routers don't currently share a utils file for the validation
+// shape, only for the actual disk-write logic in attachment-storage.js).
+function normalizeIncomingAttachment(ticketId, a) {
   if (!a) return null;
   if (typeof a === 'string') {
-    return a.trim() ? { filename: a.trim(), content_base64: null, mime_type: null, size_bytes: null } : null;
+    const filename = a.trim();
+    return filename ? { filename, mime_type: null, size_bytes: null, stored_path: null } : null;
   }
   const filename = a.filename && String(a.filename).trim();
   if (!filename) return null;
-  const content = a.content_base64 || null;
-  let sizeBytes = null;
-  if (content) {
-    sizeBytes = Buffer.from(content, 'base64').length;
-    if (sizeBytes > MAX_ATTACHMENT_BYTES) {
-      throw new Error(`"${filename}" is larger than 5MB — attachments are capped at 5MB each.`);
-    }
+  if (!a.content_base64) {
+    return { filename, mime_type: a.mime_type || null, size_bytes: null, stored_path: null };
   }
-  return { filename, content_base64: content, mime_type: a.mime_type || null, size_bytes: sizeBytes };
+  const { storedPath, sizeBytes } = saveAttachmentFile(ticketId, filename, a.content_base64);
+  return { filename, mime_type: a.mime_type || null, size_bytes: sizeBytes, stored_path: storedPath };
 }
 
 // POST /api/tickets/:ticketId/comments
@@ -79,9 +76,13 @@ router.post('/', (req, res) => {
     return res.status(400).json({ error: 'author_name is required' });
   }
 
+  // Files are written to disk before the comment row exists — same
+  // fail-before-creating-anything ordering as ticket creation.
   let normalizedFiles;
   try {
-    normalizedFiles = Array.isArray(files) ? files.map(normalizeIncomingAttachment).filter(Boolean) : [];
+    normalizedFiles = Array.isArray(files)
+      ? files.map((f) => normalizeIncomingAttachment(req.params.ticketId, f)).filter(Boolean)
+      : [];
   } catch (err) {
     return res.status(400).json({ error: err.message });
   }
@@ -107,11 +108,11 @@ router.post('/', (req, res) => {
 
     if (normalizedFiles.length) {
       const insertAttachment = db.prepare(
-        `INSERT INTO ticket_attachments (ticket_id, comment_id, filename, content_base64, mime_type, size_bytes)
+        `INSERT INTO ticket_attachments (ticket_id, comment_id, filename, mime_type, size_bytes, stored_path)
          VALUES (?, ?, ?, ?, ?, ?)`
       );
       normalizedFiles.forEach((f) => {
-        insertAttachment.run(req.params.ticketId, result.lastInsertRowid, f.filename, f.content_base64, f.mime_type, f.size_bytes);
+        insertAttachment.run(req.params.ticketId, result.lastInsertRowid, f.filename, f.mime_type, f.size_bytes, f.stored_path);
       });
     }
 

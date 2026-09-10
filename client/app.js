@@ -69,15 +69,65 @@ document.addEventListener('DOMContentLoaded', function () {
     sessionStorage.removeItem(key);
   }
 
-  // Renders a read-only row of "📎 filename" chips (used for the attachments a
-  // ticket was filed with, on the portal/agent/admin dashboards). No-op if the
-  // container isn't on this page, or there's nothing to show.
-  function renderAttachmentChips(container, names) {
+  // ---- Real file uploads (phase 1D-vi) ----
+  // Attachments used to be filenames-only — chosen in the browser, never
+  // actually read or sent anywhere, so there was nothing to open or
+  // download later. Files are now read as base64 client-side and POSTed
+  // as part of ticket creation / chat comments; the server stores the
+  // bytes in `ticket_attachments` and serves them back from
+  // GET /api/attachments/:id. Kept small (base64 in a JSON body, not a
+  // real multipart upload) to match the rest of this app's SQLite-only,
+  // no-object-storage architecture — fine for the file sizes a support
+  // ticket realistically carries, not meant for large uploads.
+  var MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024; // 5MB per file — matches the server-side cap
+
+  // Reads a single File into the shape the API expects:
+  // { filename, content_base64, mime_type, size_bytes }. Rejects anything
+  // over the cap before ever touching the network.
+  function readFileAsAttachment(file) {
+    return new Promise(function (resolve, reject) {
+      if (file.size > MAX_ATTACHMENT_BYTES) {
+        reject(new Error('"' + file.name + '" is larger than 5MB — attachments are capped at 5MB each.'));
+        return;
+      }
+      var reader = new FileReader();
+      reader.onload = function () {
+        // reader.result is a data URL ("data:<mime>;base64,<data>") —
+        // only the part after the comma is the actual payload.
+        var raw = String(reader.result);
+        var content = raw.slice(raw.indexOf(',') + 1);
+        resolve({
+          filename: file.name,
+          content_base64: content,
+          mime_type: file.type || 'application/octet-stream',
+          size_bytes: file.size
+        });
+      };
+      reader.onerror = function () { reject(new Error('Unable to read "' + file.name + '".')); };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  // Renders a row of "📎 filename" chips for the attachments a ticket/comment
+  // carries. Each entry is either a real attachment ({ id, filename }, once
+  // it has an id it can be downloaded from GET /api/attachments/:id) or —
+  // for anything written before this feature existed — a bare filename
+  // string with nothing to link to. No-op if the container isn't on this
+  // page, or there's nothing to show.
+  function renderAttachmentChips(container, items) {
     if (!container) return;
     container.innerHTML = '';
-    (names || []).forEach(function (name) {
-      var chip = document.createElement('span');
+    (items || []).forEach(function (item) {
+      var isObj = item && typeof item === 'object';
+      var name = isObj ? item.filename : item;
+      var id = isObj ? item.id : null;
+      var chip = id != null ? document.createElement('a') : document.createElement('span');
       chip.className = 'chat-attachment-chip';
+      if (id != null) {
+        chip.href = API_BASE + '/api/attachments/' + encodeURIComponent(id);
+        chip.target = '_blank';
+        chip.rel = 'noopener';
+      }
       chip.textContent = '📎 ' + name;
       container.appendChild(chip);
     });
@@ -712,20 +762,20 @@ document.addEventListener('DOMContentLoaded', function () {
     var fileList = document.getElementById('fileList');
     if (fileInput) {
       fileInput.addEventListener('change', function () {
-        Array.prototype.forEach.call(fileInput.files, function (f) { files.push(f.name); });
+        Array.prototype.forEach.call(fileInput.files, function (f) { files.push(f); });
         fileInput.value = '';
         renderFiles();
       });
     }
     function renderFiles() {
       fileList.innerHTML = '';
-      files.forEach(function (name, i) {
+      files.forEach(function (file, i) {
         var chip = document.createElement('span');
         chip.className = 'file-chip';
-        chip.innerHTML = '<span>' + name + '</span>';
+        chip.innerHTML = '<span>' + file.name + '</span>';
         var btn = document.createElement('button');
         btn.type = 'button';
-        btn.setAttribute('aria-label', 'Remove ' + name);
+        btn.setAttribute('aria-label', 'Remove ' + file.name);
         btn.textContent = '✕';
         btn.addEventListener('click', function () { files.splice(i, 1); renderFiles(); });
         chip.appendChild(btn);
@@ -799,19 +849,26 @@ document.addEventListener('DOMContentLoaded', function () {
 
       setTimeout(function () { animationDone = true; maybeGoToPortal(); }, 2600);
 
-      fetch(API_BASE + '/api/tickets', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          user_id: user ? user.id : null,
-          subject: subject.value.trim(),
-          description: description.value.trim(),
-          category: category.value,
-          priority: priority.value,
-          affected_service: service && service.value.trim() ? service.value.trim() : null,
-          attachments: files.slice()
+      // Read every selected file into base64 before the POST — a read
+      // failure (e.g. over the 5MB cap) aborts the submission the same way
+      // a validation error does, rather than sending a partial attachment
+      // list.
+      Promise.all(files.map(readFileAsAttachment))
+        .then(function (attachments) {
+          return fetch(API_BASE + '/api/tickets', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              user_id: user ? user.id : null,
+              subject: subject.value.trim(),
+              description: description.value.trim(),
+              category: category.value,
+              priority: priority.value,
+              affected_service: service && service.value.trim() ? service.value.trim() : null,
+              attachments: attachments
+            })
+          });
         })
-      })
         .then(function (response) {
           return response.json().then(function (data) {
             if (!response.ok) throw new Error(data.error || 'Unable to create the ticket.');
@@ -2024,13 +2081,13 @@ document.addEventListener('DOMContentLoaded', function () {
     function renderChatFiles() {
       if (!chatFileListEl) return;
       chatFileListEl.innerHTML = '';
-      chatFiles.forEach(function (name, i) {
+      chatFiles.forEach(function (file, i) {
         var chip = document.createElement('span');
         chip.className = 'file-chip';
-        chip.innerHTML = '<span>' + chatEscapeHtml(name) + '</span>';
+        chip.innerHTML = '<span>' + chatEscapeHtml(file.name) + '</span>';
         var btn = document.createElement('button');
         btn.type = 'button';
-        btn.setAttribute('aria-label', 'Remove ' + name);
+        btn.setAttribute('aria-label', 'Remove ' + file.name);
         btn.textContent = '✕';
         btn.addEventListener('click', function () { chatFiles.splice(i, 1); renderChatFiles(); });
         chip.appendChild(btn);
@@ -2041,7 +2098,7 @@ document.addEventListener('DOMContentLoaded', function () {
     if (chatAttachBtn && chatAttachInput) {
       chatAttachBtn.addEventListener('click', function () { chatAttachInput.click(); });
       chatAttachInput.addEventListener('change', function () {
-        Array.prototype.forEach.call(chatAttachInput.files, function (f) { chatFiles.push(f.name); });
+        Array.prototype.forEach.call(chatAttachInput.files, function (f) { chatFiles.push(f); });
         chatAttachInput.value = '';
         renderChatFiles();
       });
@@ -2092,7 +2149,12 @@ document.addEventListener('DOMContentLoaded', function () {
         var filesHtml = '';
         if (m.files && m.files.length) {
           filesHtml = '<div class="chat-attachments">' + m.files.map(function (f) {
-            return '<span class="chat-attachment-chip">📎 ' + chatEscapeHtml(f) + '</span>';
+            var isObj = f && typeof f === 'object';
+            var name = isObj ? f.filename : f;
+            var href = isObj && f.id != null ? API_BASE + '/api/attachments/' + encodeURIComponent(f.id) : null;
+            return href
+              ? '<a class="chat-attachment-chip" href="' + href + '" target="_blank" rel="noopener">📎 ' + chatEscapeHtml(name) + '</a>'
+              : '<span class="chat-attachment-chip">📎 ' + chatEscapeHtml(name) + '</span>';
           }).join('') + '</div>';
         }
         bubble.innerHTML =
@@ -2112,17 +2174,27 @@ document.addEventListener('DOMContentLoaded', function () {
       var filesToSend = chatFiles.slice();
 
       chatSendBtn.disabled = true;
-      postComment(chatTicket.id, chatRole, chatActorName, text, visibility, filesToSend, function (comment) {
-        chatSendBtn.disabled = false;
-        chatMessages.push(comment);
-        chatInput.value = '';
-        chatFiles = [];
-        renderChatFiles();
-        renderChatMessages();
-      }, function (err) {
-        chatSendBtn.disabled = false;
-        alert(err.message || 'Unable to send that message. Please try again.');
-      });
+      // Same read-before-send pattern as ticket creation: the files are
+      // read into base64 client-side, then posted alongside the message
+      // text in one comment.
+      Promise.all(filesToSend.map(readFileAsAttachment))
+        .then(function (attachments) {
+          postComment(chatTicket.id, chatRole, chatActorName, text, visibility, attachments, function (comment) {
+            chatSendBtn.disabled = false;
+            chatMessages.push(comment);
+            chatInput.value = '';
+            chatFiles = [];
+            renderChatFiles();
+            renderChatMessages();
+          }, function (err) {
+            chatSendBtn.disabled = false;
+            alert(err.message || 'Unable to send that message. Please try again.');
+          });
+        })
+        .catch(function (err) {
+          chatSendBtn.disabled = false;
+          alert(err.message || 'Unable to attach one of those files. Please try again.');
+        });
     }
 
     function initChat() {
