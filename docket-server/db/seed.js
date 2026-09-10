@@ -1,35 +1,19 @@
 // Seeds the same starting data app.js used to bootstrap into localStorage,
 // so tickets/records created against the old front end still resolve to a
-// real agent/admin once it's pointed at this API.
+// real admin once it's pointed at this API.
 //
-// Safe to re-run: every insert is "OR IGNORE" against the unique email, so
-// running `npm run seed` twice does not create duplicates.
+// Agents are no longer seeded. The five demo agents this used to insert —
+// Maya Owusu, Kwame Boateng, Ama Serwaa, Yaw Mensah, Efia Asante — have
+// been dropped; agents now come from the admin "Add an agent" form or
+// self-sign-in on the agent login page instead. If those five are still
+// sitting in an already-seeded database, see remove-seeded-agents.js —
+// removing them here only stops them from coming back on a *fresh* DB.
+//
+// Safe to re-run: the admin insert is "OR IGNORE" against the unique
+// email, so running `npm run seed` twice does not create duplicates.
 
 const bcrypt = require('bcryptjs');
 const db = require('./connection');
-
-const AGENT_SEED_NAMES = ['Maya Owusu', 'Kwame Boateng', 'Ama Serwaa', 'Yaw Mensah', 'Efia Asante'];
-
-function slugAgentEmail(name) {
-  return name.trim().toLowerCase().replace(/[^a-z\s]/g, '').trim().replace(/\s+/g, '.') + '@docket.com';
-}
-
-function genId(prefix, n) {
-  return prefix + '-2026-' + String(n).padStart(6, '0');
-}
-
-function seedAgents() {
-  const insert = db.prepare(
-    "INSERT OR IGNORE INTO agents (id, full_name, email, created_by, created_at) VALUES (?, ?, ?, 'seed', datetime('now'))"
-  );
-  const seedAll = db.transaction((names) => {
-    names.forEach((name, i) => {
-      insert.run(genId('AGT', i + 1), name, slugAgentEmail(name));
-    });
-  });
-  seedAll(AGENT_SEED_NAMES);
-  console.log(`Seeded ${AGENT_SEED_NAMES.length} agents (or confirmed they already exist).`);
-}
 
 function seedAdmin() {
   // The old front end checked this password in plaintext client-side JS,
@@ -44,7 +28,6 @@ function seedAdmin() {
 }
 
 function seed() {
-  seedAgents();
   seedAdmin();
 
   console.log('Seed complete. Database file: ./docket.db');
