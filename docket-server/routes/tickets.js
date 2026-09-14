@@ -3,6 +3,8 @@ const db = require('../db/connection');
 const { nextId } = require('../utils/ids');
 const { ensureAttachmentColumns } = require('../db/migrate-attachments');
 const { saveAttachmentFile } = require('../utils/attachment-storage');
+const { requireAuth } = require('../middleware/authenticate');
+const { requireTicketAccess } = require('../middleware/authorize');
 
 const router = express.Router();
 
@@ -117,10 +119,16 @@ function normalizeIncomingAttachment(ticketId, a) {
 }
 
 // POST /api/tickets
-// body: { user_id, subject, description, category, priority, affected_service?,
+// body: { user_id?, subject, description, category, priority, affected_service?,
 //         attachments?: [{ filename, content_base64, mime_type? }, ...] }
-router.post('/', (req, res) => {
-  const { user_id, subject, description, category, priority, affected_service, attachments } = req.body || {};
+// user_id comes from the authenticated actor when they're a customer —
+// the body's user_id is only honored when an admin is creating a ticket
+// on a customer's behalf (e.g. phone-in tickets). Agents cannot create
+// tickets at all, per the authorization matrix.
+router.post('/', requireAuth(['user', 'admin']), (req, res) => {
+  const { subject, description, category, priority, affected_service, attachments } = req.body || {};
+
+  const user_id = req.actor.role === 'user' ? req.actor.id : req.body?.user_id;
 
   if (!user_id) return res.status(400).json({ error: 'user_id is required' });
   if (!subject || !subject.trim()) return res.status(400).json({ error: 'subject is required' });
@@ -174,13 +182,24 @@ router.post('/', (req, res) => {
 });
 
 // GET /api/tickets?user_id=...&assigned_agent_id=...&status=...
-router.get('/', (req, res) => {
-  const { user_id, assigned_agent_id, status } = req.query;
+// user_id/assigned_agent_id in the query string are only advisory now —
+// for 'user' and 'agent' actors the filter is forced to their own id
+// server-side, regardless of what the query string says, so no actor can
+// list another customer's or another agent's tickets by editing the URL.
+// Admins may filter by whatever they like, including neither (all tickets).
+router.get('/', requireAuth(), (req, res) => {
+  const { status } = req.query;
   let sql = 'SELECT t.*, u.email AS requester_email FROM tickets t LEFT JOIN users u ON u.id = t.user_id WHERE 1=1';
   const params = [];
 
-  if (user_id) { sql += ' AND t.user_id = ?'; params.push(user_id); }
-  if (assigned_agent_id) { sql += ' AND t.assigned_agent_id = ?'; params.push(assigned_agent_id); }
+  if (req.actor.role === 'user') {
+    sql += ' AND t.user_id = ?'; params.push(req.actor.id);
+  } else if (req.actor.role === 'agent') {
+    sql += ' AND t.assigned_agent_id = ?'; params.push(req.actor.id);
+  } else if (req.actor.role === 'admin') {
+    if (req.query.user_id) { sql += ' AND t.user_id = ?'; params.push(req.query.user_id); }
+    if (req.query.assigned_agent_id) { sql += ' AND t.assigned_agent_id = ?'; params.push(req.query.assigned_agent_id); }
+  }
   if (status) { sql += ' AND t.status = ?'; params.push(status); }
 
   sql += ' ORDER BY t.created_at DESC';
@@ -189,18 +208,28 @@ router.get('/', (req, res) => {
 });
 
 // GET /api/tickets/:id  (includes comments + attachment_count + attachments)
-router.get('/:id', (req, res) => {
-  const ticket = ticketWithComments(req.params.id);
-  if (!ticket) return res.status(404).json({ error: 'not found' });
-  res.json(ticket);
-});
+router.get(
+  '/:id',
+  requireAuth(),
+  requireTicketAccess({ allowCustomer: true, allowAssignedAgent: true, allowAdmin: true }),
+  (req, res) => {
+    // req.ticket was already fetched and permission-checked by
+    // requireTicketAccess; ticketWithComments re-fetches so it can attach
+    // comments/attachments in the same shape as every other response.
+    res.json(ticketWithComments(req.params.id));
+  }
+);
 
 // PATCH /api/tickets/:id/assign
 // body: { assigned_agent_id }  — pass null/omit to unassign.
 // Mirrors app.js's reassign handler: claiming an unassigned Created ticket
 // bumps it to Assigned; sending it back to Unassigned resets it to Created
 // (unless it's Resolved/Closed, which stays put either way).
-router.patch('/:id/assign', (req, res) => {
+// Admin-only for now. Agent self-claim/reassignment can be added later as
+// its own narrower rule once the frontend workflow for it is settled —
+// bolting it onto this handler prematurely risks agents reassigning
+// tickets away from themselves or each other.
+router.patch('/:id/assign', requireAuth(['admin']), (req, res) => {
   const ticket = db.prepare('SELECT * FROM tickets WHERE id = ?').get(req.params.id);
   if (!ticket) return res.status(404).json({ error: 'not found' });
 
@@ -230,9 +259,12 @@ router.patch('/:id/assign', (req, res) => {
 // Resolving requires resolution_summary; escalating requires both
 // escalated_to and escalation_reason — same hard requirements app.js's
 // resolve/escalate panels enforce client-side.
-router.patch('/:id/status', (req, res) => {
-  const ticket = db.prepare('SELECT * FROM tickets WHERE id = ?').get(req.params.id);
-  if (!ticket) return res.status(404).json({ error: 'not found' });
+router.patch(
+  '/:id/status',
+  requireAuth(),
+  requireTicketAccess({ allowAssignedAgent: true, allowAdmin: true }),
+  (req, res) => {
+  const ticket = req.ticket;
 
   const { status, resolution_summary, escalated_to, escalation_reason } = req.body || {};
   if (!status || !canTransition(ticket.status, status)) {
@@ -260,14 +292,19 @@ router.patch('/:id/status', (req, res) => {
   ).run(status, resolution_summary || null, escalated_to || null, escalation_reason || null, req.params.id);
 
   res.json(ticketWithComments(req.params.id));
-});
+  }
+);
 
 // PATCH /api/tickets/:id/csat  { csat_rating (1-5), csat_comment? }
 // Only valid once a ticket is Closed and not already rated — mirrors the
-// portal's csatPanel/csatDone toggle.
-router.patch('/:id/csat', (req, res) => {
-  const ticket = db.prepare('SELECT * FROM tickets WHERE id = ?').get(req.params.id);
-  if (!ticket) return res.status(404).json({ error: 'not found' });
+// portal's csatPanel/csatDone toggle. Customer-only per the authorization
+// matrix: agents and admins never submit CSAT on a customer's behalf.
+router.patch(
+  '/:id/csat',
+  requireAuth(),
+  requireTicketAccess({ allowCustomer: true }),
+  (req, res) => {
+  const ticket = req.ticket;
 
   if (ticket.status !== 'Closed') {
     return res.status(400).json({ error: 'ticket must be Closed before it can be rated' });
@@ -287,6 +324,7 @@ router.patch('/:id/csat', (req, res) => {
   ).run(rating, comment, req.params.id);
 
   res.json(ticketWithComments(req.params.id));
-});
+  }
+);
 
 module.exports = router;

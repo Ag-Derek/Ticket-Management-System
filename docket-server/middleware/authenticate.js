@@ -10,15 +10,15 @@
 // so local dev doesn't crash on a missing .env — it deliberately logs a
 // warning every time it's used so it can't go unnoticed.
 
+require('dotenv').config();
+
 const crypto = require('crypto');
 
-const SECRET = process.env.AUTH_TOKEN_SECRET || (() => {
-  console.warn(
-    'WARNING: AUTH_TOKEN_SECRET is not set — using an insecure default. ' +
-    'Set AUTH_TOKEN_SECRET in your environment before deploying.'
-  );
-  return 'dev-only-insecure-secret';
-})();
+const SECRET = process.env.AUTH_TOKEN_SECRET;
+
+if (!SECRET) {
+  throw new Error('AUTH_TOKEN_SECRET is not set');
+}
 
 const TOKEN_TTL_SECONDS = 60 * 60 * 12; // 12 hours
 
