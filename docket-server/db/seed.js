@@ -20,10 +20,23 @@ function seedAdmin() {
   // which only ever worked as a demo. Here it's hashed at rest and will
   // need a real bcrypt.compare() check in the login route.
   const passwordHash = bcrypt.hashSync('Admin2026!', 10);
-  const insert = db.prepare(
-    'INSERT OR IGNORE INTO admins (id, email, password_hash, full_name, created_at) VALUES (?, ?, ?, ?, datetime(\'now\'))'
+  const adminId = 'ADM-2026-000001';
+
+  const insertAdmin = db.prepare(
+    'INSERT OR IGNORE INTO admins (id, email, full_name, created_at) VALUES (?, ?, ?, datetime(\'now\'))'
   );
-  insert.run('ADM-2026-000001', 'admin@docket.com', passwordHash, 'System Administrator');
+  insertAdmin.run(adminId, 'admin@docket.com', 'System Administrator');
+
+  // Credentials now live in auth_credentials, not on admins directly —
+  // see db/schema.sql. OR IGNORE against the (owner_type, owner_id)
+  // unique constraint keeps this safe to re-run.
+  const insertCred = db.prepare(
+    `INSERT OR IGNORE INTO auth_credentials
+       (owner_type, owner_id, auth_provider, password_hash, created_at, updated_at)
+     VALUES ('admin', ?, 'local', ?, datetime('now'), datetime('now'))`
+  );
+  insertCred.run(adminId, passwordHash);
+
   console.log('Seeded admin account admin@docket.com (or confirmed it already exists).');
 }
 

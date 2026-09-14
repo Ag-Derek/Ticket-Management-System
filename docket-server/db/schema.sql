@@ -26,9 +26,36 @@ CREATE TABLE IF NOT EXISTS agents (
 CREATE TABLE IF NOT EXISTS admins (
   id              TEXT PRIMARY KEY,          -- ADM-2026-000001
   email           TEXT UNIQUE NOT NULL,
-  password_hash   TEXT NOT NULL,
   full_name       TEXT,
   created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Auth is centralized here instead of living inline on whichever table
+-- needed a login first (previously just admins.password_hash). Every
+-- loginable actor (user, agent, admin) gets at most one row here, keyed
+-- by (owner_type, owner_id). This is what makes SSO/Entra ID a later
+-- addition to ONE table rather than a redesign of three, and lets a
+-- user/agent/admin exist without being able to log in yet (e.g. a
+-- customer record created from a ticket, before they ever set a password).
+CREATE TABLE IF NOT EXISTS auth_credentials (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_type        TEXT NOT NULL,           -- user | agent | admin
+  owner_id          TEXT NOT NULL,           -- users(id) / agents(id) / admins(id), depending on owner_type
+  auth_provider     TEXT NOT NULL DEFAULT 'local', -- local | sso
+  provider_subject  TEXT,                    -- external id from the SSO provider; null for 'local'
+  password_hash     TEXT,                    -- null when auth_provider = 'sso'
+  mfa_enabled       INTEGER NOT NULL DEFAULT 0, -- 0/1
+  mfa_secret        TEXT,
+  last_login_at     TEXT,
+  created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (owner_type, owner_id),
+  CHECK (owner_type IN ('user', 'agent', 'admin')),
+  CHECK (auth_provider IN ('local', 'sso')),
+  CHECK (
+    (auth_provider = 'local' AND password_hash IS NOT NULL) OR
+    (auth_provider = 'sso'   AND password_hash IS NULL)
+  )
 );
 
 CREATE TABLE IF NOT EXISTS tickets (
@@ -64,15 +91,23 @@ CREATE TABLE IF NOT EXISTS ticket_comments (
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- filename only for now: real file storage isn't wired up yet, so
--- stored_path stays nullable until an upload endpoint exists.
+-- An attachment belongs to exactly one of: a ticket (attached directly,
+-- e.g. at creation) or a comment (attached to a specific reply). It can
+-- never belong to neither, and never to both — the CHECK below enforces
+-- that instead of leaving it to application code to get right every time.
 CREATE TABLE IF NOT EXISTS ticket_attachments (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   ticket_id     TEXT REFERENCES tickets(id),
   comment_id    INTEGER REFERENCES ticket_comments(id),
   filename      TEXT NOT NULL,
   stored_path   TEXT,
-  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  mime_type     TEXT,
+  size_bytes    INTEGER,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  CHECK (
+    (ticket_id IS NOT NULL AND comment_id IS NULL) OR
+    (ticket_id IS NULL AND comment_id IS NOT NULL)
+  )
 );
 
 CREATE INDEX IF NOT EXISTS idx_tickets_user ON tickets(user_id);
@@ -80,3 +115,5 @@ CREATE INDEX IF NOT EXISTS idx_tickets_agent ON tickets(assigned_agent_id);
 CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);
 CREATE INDEX IF NOT EXISTS idx_comments_ticket ON ticket_comments(ticket_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_ticket ON ticket_attachments(ticket_id);
+CREATE INDEX IF NOT EXISTS idx_attachments_comment ON ticket_attachments(comment_id);
+CREATE INDEX IF NOT EXISTS idx_auth_owner ON auth_credentials(owner_type, owner_id);

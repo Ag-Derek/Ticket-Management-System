@@ -20,4 +20,13 @@ db.pragma('foreign_keys = ON');
 const schema = fs.readFileSync(SCHEMA_PATH, 'utf8');
 db.exec(schema);
 
+// Both migrations below are idempotent (they check current state before
+// doing anything), so it's safe to run them on every boot rather than
+// tracking a separate "have I migrated" flag.
+const { ensureAttachmentColumns } = require('./migrate-attachments');
+ensureAttachmentColumns(db);
+
+const { migrateToAuthLayer } = require('./migrate-to-auth-layer');
+migrateToAuthLayer(db);
+
 module.exports = db;
