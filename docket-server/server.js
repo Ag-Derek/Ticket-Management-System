@@ -28,6 +28,7 @@ app.use('/api/users', require('./routes/users'));
 app.use('/api/agents', require('./routes/agents'));
 app.use('/api/admins', require('./routes/admins'));
 app.use('/api/tickets', require('./routes/tickets'));
+app.use('/api/auth', require('./routes/auth'));
 // Comments are nested under a ticket: /api/tickets/:ticketId/comments
 app.use('/api/tickets/:ticketId/comments', require('./routes/comments'));
 
