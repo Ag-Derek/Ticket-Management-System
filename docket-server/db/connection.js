@@ -7,8 +7,17 @@ const path = require('path');
 const fs = require('fs');
 const Database = require('better-sqlite3');
 
-const DB_PATH = path.join(__dirname, '..', 'docket.db');
+// Render's filesystem is ephemeral outside a mounted persistent disk —
+// every redeploy/restart rebuilds it from the build output, wiping a plain
+// file inside the app directory. DB_PATH lets production point this at the
+// same persistent disk already mounted for attachments (e.g.
+// /data/docket.db), while local dev keeps the old repo-relative default.
+const DB_PATH = process.env.DB_PATH
+  ? path.resolve(process.env.DB_PATH)
+  : path.join(__dirname, '..', 'docket.db');
 const SCHEMA_PATH = path.join(__dirname, 'schema.sql');
+
+fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
