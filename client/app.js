@@ -93,6 +93,22 @@ document.addEventListener('DOMContentLoaded', function () {
     return actor && actor.token ? { 'Authorization': 'Bearer ' + actor.token } : {};
   }
 
+  // A 401 on a requireAuth()-protected call means the actor's token is
+  // missing or expired (sessions last 12 hours — see AUTH_TOKEN_SECRET/
+  // signToken on the backend), not that there's genuinely no data. Without
+  // this, an expired token made tickets look like they'd vanished on
+  // refresh — the portal/agent/admin queues all treated "the fetch failed"
+  // the same as "there's nothing to show". Clears whichever session is
+  // stale and sends the actor back to the right login page instead.
+  function handleAuthExpired() {
+    if (readSession('docketAgent')) { clearSession('docketAgent'); window.location.href = 'agent-login.html'; return true; }
+    if (readSession('docketAdmin')) { clearSession('docketAdmin'); window.location.href = 'admin-login.html'; return true; }
+    var hasUser = false;
+    try { hasUser = !!JSON.parse(localStorage.getItem('docketUser')); } catch (e) { hasUser = false; }
+    if (hasUser) { localStorage.removeItem('docketUser'); window.location.href = 'landing.html'; return true; }
+    return false;
+  }
+
   // ---- Real file uploads (phase 1D-vi) ----
   // Attachments used to be filenames-only — chosen in the browser, never
   // actually read or sent anywhere, so there was nothing to open or
@@ -527,7 +543,11 @@ document.addEventListener('DOMContentLoaded', function () {
   function fetchComments(ticketId, onDone, onError) {
     fetch(API_BASE + '/api/tickets/' + encodeURIComponent(ticketId) + '/comments', { headers: authHeaders() })
       .then(function (response) {
-        if (!response.ok) throw new Error('Unable to load messages.');
+        if (!response.ok) {
+          var err = new Error('Unable to load messages.');
+          err.status = response.status;
+          throw err;
+        }
         return response.json();
       })
       .then(function (rows) { onDone(rows.map(normalizeComment)); })
@@ -618,7 +638,11 @@ document.addEventListener('DOMContentLoaded', function () {
     }
     fetch(API_BASE + '/api/tickets' + qs, { headers: authHeaders() })
       .then(function (response) {
-        if (!response.ok) throw new Error('Unable to load tickets.');
+        if (!response.ok) {
+          var err = new Error('Unable to load tickets.');
+          err.status = response.status;
+          throw err;
+        }
         return response.json();
       })
       .then(function (rows) { onDone(rows.map(normalizeTicket)); })
@@ -638,7 +662,9 @@ document.addEventListener('DOMContentLoaded', function () {
     attempt = attempt || 0;
     var delays = [2000, 5000]; // wait 2s, then 5s, before giving up
     fetchTickets(query, onDone, function (err) {
-      if (attempt < delays.length) {
+      // A 401 (expired/missing token) will never succeed on retry — only
+      // retry for a transient failure (e.g. a Render cold start).
+      if (err.status !== 401 && attempt < delays.length) {
         setTimeout(function () {
           fetchTicketsWithRetry(query, onDone, onError, attempt + 1);
         }, delays[attempt]);
@@ -1311,7 +1337,8 @@ document.addEventListener('DOMContentLoaded', function () {
         var countEl = document.getElementById('profileTicketCount');
         if (countEl) countEl.textContent = all.length;
         bootstrapPortal();
-      }, function () {
+      }, function (err) {
+        if (err && err.status === 401 && handleAuthExpired()) return;
         bootstrapPortal();
       });
     });
@@ -2065,7 +2092,8 @@ document.addEventListener('DOMContentLoaded', function () {
             agentKnownSignature[t.id] = t.status + '|' + (t.assignedAgent || '');
           });
           bootstrapAgentQueue();
-        }, function () {
+        }, function (err) {
+          if (err && err.status === 401 && handleAuthExpired()) return;
           bootstrapAgentQueue(true);
         });
       });
@@ -2294,7 +2322,10 @@ document.addEventListener('DOMContentLoaded', function () {
     // initChat's existing "not found" branch, which disables the composer.
     // Comments are only fetched once the ticket itself is confirmed to exist.
     fetch(API_BASE + '/api/tickets/' + encodeURIComponent(chatTicketId), { headers: authHeaders() })
-      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (response) {
+        if (response.status === 401 && handleAuthExpired()) return null;
+        return response.ok ? response.json() : null;
+      })
       .then(function (row) {
         if (!row) { initChat(); return; }
         chatTicket = normalizeTicket(row);
@@ -2685,7 +2716,8 @@ document.addEventListener('DOMContentLoaded', function () {
           });
           populateAssigneeFilter();
           bootstrapAdminConsole();
-        }, function () {
+        }, function (err) {
+          if (err && err.status === 401 && handleAuthExpired()) return;
           bootstrapAdminConsole(true);
         });
       });
