@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../db/connection');
 const { requireAuth } = require('../middleware/authenticate');
 const { getTicket, canAccessTicket } = require('../middleware/authorize');
+const { fetchAttachmentFile } = require('../utils/attachment-storage');
 
 const router = express.Router();
 
@@ -35,10 +36,10 @@ function resolveAttachment(attachmentId) {
   return { attachment, ticketId: comment.ticket_id, visibility: comment.visibility };
 }
 
-// GET /api/attachments/:id — streams the file back from disk (stored_path)
-// under its original filename, but only after confirming the requester
-// has access to the ticket (and, for a reply attachment, the visibility)
-// it belongs to.
+// GET /api/attachments/:id — proxies the file back from Supabase Storage
+// (stored_path) under its original filename, but only after confirming
+// the requester has access to the ticket (and, for a reply attachment,
+// the visibility) it belongs to.
 //
 // Every rejection below returns the same 404 "attachment not found",
 // whether the attachment doesn't exist, the ticket doesn't exist, the
@@ -46,7 +47,7 @@ function resolveAttachment(attachmentId) {
 // customer is asking for. A 403 or a different message would confirm to
 // an unauthorized caller that a given attachment id is real — the same
 // reasoning as the visibility=internal case in comments.js.
-router.get('/:id', requireAuth(), (req, res) => {
+router.get('/:id', requireAuth(), async (req, res) => {
   const resolved = resolveAttachment(req.params.id);
   if (!resolved) {
     return res.status(404).json({ error: 'attachment not found' });
@@ -66,15 +67,20 @@ router.get('/:id', requireAuth(), (req, res) => {
     return res.status(404).json({ error: 'attachment not found' });
   }
 
-  // res.download sets Content-Disposition from the filename argument (not
-  // the on-disk name, which has a random collision-avoidance prefix — see
-  // saveAttachmentFile) and infers Content-Type from its extension.
-  // stored_path itself is never sent to the client.
-  res.download(resolved.attachment.stored_path, resolved.attachment.filename, (err) => {
-    if (err && !res.headersSent) {
-      res.status(404).json({ error: 'attachment file is missing on disk' });
-    }
-  });
+  // Every check above is identical to the local-disk version. Only the
+  // last step changes: instead of streaming a local file, fetch the
+  // bytes from Supabase Storage and write them to the response
+  // ourselves. The client still only ever talks to our server — it never
+  // sees a Supabase URL or the storedPath key.
+  const buffer = await fetchAttachmentFile(resolved.attachment.stored_path);
+  if (!buffer) {
+    return res.status(404).json({ error: 'attachment file is missing in storage' });
+  }
+
+  const safeName = String(resolved.attachment.filename).replace(/"/g, "'");
+  res.setHeader('Content-Type', resolved.attachment.mime_type || 'application/octet-stream');
+  res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+  res.send(buffer);
 });
 
 module.exports = router;

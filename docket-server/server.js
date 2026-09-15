@@ -33,6 +33,7 @@ app.use('/api/tickets', require('./routes/tickets'));
 app.use('/api/auth', require('./routes/auth'));
 // Comments are nested under a ticket: /api/tickets/:ticketId/comments
 app.use('/api/tickets/:ticketId/comments', require('./routes/comments'));
+app.use('/api/attachments', require('./middleware/attachments'));
 
 const PORT = process.env.PORT || 4000;
 

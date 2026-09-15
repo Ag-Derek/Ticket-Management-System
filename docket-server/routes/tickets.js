@@ -103,7 +103,7 @@ function ticketWithComments(id) {
 // content_base64 (nothing to write, so stored_path stays null — same as
 // an attachment recorded before real file storage existed, or record of a
 // name whose upload failed).
-function normalizeIncomingAttachment(ticketId, a) {
+async function normalizeIncomingAttachment(ticketId, a) {
   if (!a) return null;
   if (typeof a === 'string') {
     const filename = a.trim();
@@ -114,7 +114,7 @@ function normalizeIncomingAttachment(ticketId, a) {
   if (!a.content_base64) {
     return { filename, mime_type: a.mime_type || null, size_bytes: null, stored_path: null };
   }
-  const { storedPath, sizeBytes } = saveAttachmentFile(ticketId, filename, a.content_base64);
+  const { storedPath, sizeBytes } = await saveAttachmentFile(ticketId, filename, a.content_base64);
   return { filename, mime_type: a.mime_type || null, size_bytes: sizeBytes, stored_path: storedPath };
 }
 
@@ -125,7 +125,7 @@ function normalizeIncomingAttachment(ticketId, a) {
 // the body's user_id is only honored when an admin is creating a ticket
 // on a customer's behalf (e.g. phone-in tickets). Agents cannot create
 // tickets at all, per the authorization matrix.
-router.post('/', requireAuth(['user', 'admin']), (req, res) => {
+router.post('/', requireAuth(['user', 'admin']), async (req, res) => {
   const { subject, description, category, priority, affected_service, attachments } = req.body || {};
 
   const user_id = req.actor.role === 'user' ? req.actor.id : req.body?.user_id;
@@ -154,7 +154,7 @@ router.post('/', requireAuth(['user', 'admin']), (req, res) => {
   let normalizedAttachments;
   try {
     normalizedAttachments = Array.isArray(attachments)
-      ? attachments.map((a) => normalizeIncomingAttachment(id, a)).filter(Boolean)
+      ? (await Promise.all(attachments.map((a) => normalizeIncomingAttachment(id, a)))).filter(Boolean)
       : [];
   } catch (err) {
     return res.status(400).json({ error: err.message });

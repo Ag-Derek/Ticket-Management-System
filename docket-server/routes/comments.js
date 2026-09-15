@@ -83,7 +83,7 @@ router.get('/', requireAuth(), requireTicketAccess(TICKET_ACCESS), (req, res) =>
 // normalizeIncomingAttachment (kept as a separate copy here since these
 // two routers don't currently share a utils file for the validation
 // shape, only for the actual disk-write logic in attachment-storage.js).
-function normalizeIncomingAttachment(ticketId, a) {
+async function normalizeIncomingAttachment(ticketId, a) {
   if (!a) return null;
   if (typeof a === 'string') {
     const filename = a.trim();
@@ -94,7 +94,7 @@ function normalizeIncomingAttachment(ticketId, a) {
   if (!a.content_base64) {
     return { filename, mime_type: a.mime_type || null, size_bytes: null, stored_path: null };
   }
-  const { storedPath, sizeBytes } = saveAttachmentFile(ticketId, filename, a.content_base64);
+  const { storedPath, sizeBytes } = await saveAttachmentFile(ticketId, filename, a.content_base64);
   return { filename, mime_type: a.mime_type || null, size_bytes: sizeBytes, stored_path: storedPath };
 }
 
@@ -104,7 +104,7 @@ function normalizeIncomingAttachment(ticketId, a) {
 // come entirely from req.actor, set by requireAuth() from the verified
 // token. A message needs text or at least one file — matches the chat
 // composer, which blocks sending an empty message with no attachment.
-router.post('/', requireAuth(), requireTicketAccess(TICKET_ACCESS), (req, res) => {
+router.post('/', requireAuth(), requireTicketAccess(TICKET_ACCESS), async (req, res) => {
   const { visibility, body, files } = req.body || {};
   const authorType = ROLE_TO_AUTHOR_TYPE[req.actor.role];
   const authorName = lookupActorName(req.actor);
@@ -116,7 +116,7 @@ router.post('/', requireAuth(), requireTicketAccess(TICKET_ACCESS), (req, res) =
   let normalizedFiles;
   try {
     normalizedFiles = Array.isArray(files)
-      ? files.map((f) => normalizeIncomingAttachment(req.params.ticketId, f)).filter(Boolean)
+      ? (await Promise.all(files.map((f) => normalizeIncomingAttachment(req.params.ticketId, f)))).filter(Boolean)
       : [];
   } catch (err) {
     return res.status(400).json({ error: err.message });
