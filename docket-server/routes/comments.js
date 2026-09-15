@@ -136,25 +136,40 @@ router.post('/', requireAuth(), requireTicketAccess(TICKET_ACCESS), async (req, 
     return res.status(400).json({ error: 'customer comments cannot be marked internal' });
   }
 
-  const commentId = db.transaction(() => {
+  const insertComment = db.transaction(() => {
     const result = db.prepare(
       `INSERT INTO ticket_comments (ticket_id, author_type, author_name, visibility, body)
        VALUES (?, ?, ?, ?, ?)`
     ).run(req.params.ticketId, authorType, authorName, vis, (body || '').trim());
 
     if (normalizedFiles.length) {
+      // comment_id only, ticket_id left null — ticket_attachments' CHECK
+      // constraint requires exactly one of the two (see schema.sql /
+      // migrate-to-auth-layer.js). The owning ticket is reached through
+      // comment_id -> ticket_comments.ticket_id instead.
       const insertAttachment = db.prepare(
-        `INSERT INTO ticket_attachments (ticket_id, comment_id, filename, mime_type, size_bytes, stored_path)
-         VALUES (?, ?, ?, ?, ?, ?)`
+        `INSERT INTO ticket_attachments (comment_id, filename, mime_type, size_bytes, stored_path)
+         VALUES (?, ?, ?, ?, ?)`
       );
       normalizedFiles.forEach((f) => {
-        insertAttachment.run(req.params.ticketId, result.lastInsertRowid, f.filename, f.mime_type, f.size_bytes, f.stored_path);
+        insertAttachment.run(result.lastInsertRowid, f.filename, f.mime_type, f.size_bytes, f.stored_path);
       });
     }
 
     db.prepare(`UPDATE tickets SET updated_at = datetime('now') WHERE id = ?`).run(req.params.ticketId);
     return result.lastInsertRowid;
-  })();
+  });
+
+  let commentId;
+  try {
+    commentId = insertComment();
+  } catch (err) {
+    // Route handler is async, so an uncaught synchronous throw here would
+    // become an unhandled rejection and crash the whole process instead of
+    // just failing this request — catch and respond with a normal 500.
+    console.error('POST /api/tickets/:ticketId/comments: failed to persist comment', err);
+    return res.status(500).json({ error: 'failed to post comment' });
+  }
 
   const created = db.prepare('SELECT * FROM ticket_comments WHERE id = ?').get(commentId);
   const createdFiles = db.prepare('SELECT id, filename FROM ticket_attachments WHERE comment_id = ?').all(commentId);

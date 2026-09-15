@@ -62,11 +62,14 @@ function canTransition(from, to) {
 // comment — matches bumpTicketFileCount's "only bump on public" rule in
 // app.js, so an internal note's attachment doesn't show up to the customer.
 function attachmentCount(ticketId) {
+  // ticket_attachments enforces ticket_id XOR comment_id (see schema.sql),
+  // so a comment's attachment never carries the ticket_id directly —
+  // reach its owning ticket through comment_id -> ticket_comments.ticket_id.
   return db.prepare(
     `SELECT COUNT(*) AS n FROM ticket_attachments ta
      LEFT JOIN ticket_comments tc ON ta.comment_id = tc.id
-     WHERE ta.ticket_id = ? AND (ta.comment_id IS NULL OR tc.visibility = 'public')`
-  ).get(ticketId).n;
+     WHERE ta.ticket_id = ? OR (tc.ticket_id = ? AND tc.visibility = 'public')`
+  ).get(ticketId, ticketId).n;
 }
 
 // Creation-time attachments only (comment_id IS NULL) — chat attachments
@@ -176,7 +179,16 @@ router.post('/', requireAuth(['user', 'admin']), async (req, res) => {
       insertAttachment.run(id, a.filename, a.mime_type, a.size_bytes, a.stored_path);
     });
   });
-  insertTicket();
+  try {
+    insertTicket();
+  } catch (err) {
+    // Route handler is async, so an uncaught synchronous throw here would
+    // become an unhandled rejection and crash the whole process (Node
+    // terminates on those by default) instead of just failing this
+    // request — catch and respond with a normal 500 like any other error.
+    console.error('POST /api/tickets: failed to persist ticket', err);
+    return res.status(500).json({ error: 'failed to create ticket' });
+  }
 
   res.status(201).json(ticketWithComments(id));
 });
