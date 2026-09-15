@@ -1,41 +1,71 @@
-// Single shared better-sqlite3 connection.
-// better-sqlite3 is synchronous by design — no async/await needed for queries,
-// which keeps route handlers simple. The trade-off is that a slow query blocks
-// the event loop, which is a non-issue at this scale (local dev / small team).
+// Shared Postgres connection pool (Supabase). Replaces the old
+// better-sqlite3 file — the app is now stateless with respect to Render's
+// filesystem, so a redeploy/restart can no longer wipe ticket data the way
+// a plain SQLite file on an unmounted disk could.
+//
+// Queries are async (pg.Pool.query returns a Promise), unlike
+// better-sqlite3's synchronous API — every route/middleware that touches
+// the database is `async` now and uses `$1, $2, ...` placeholders instead
+// of `?`.
 
-const path = require('path');
 const fs = require('fs');
-const Database = require('better-sqlite3');
+const path = require('path');
+const { Pool } = require('pg');
 
-// Render's filesystem is ephemeral outside a mounted persistent disk —
-// every redeploy/restart rebuilds it from the build output, wiping a plain
-// file inside the app directory. DB_PATH lets production point this at the
-// same persistent disk already mounted for attachments (e.g.
-// /data/docket.db), while local dev keeps the old repo-relative default.
-const DB_PATH = process.env.DB_PATH
-  ? path.resolve(process.env.DB_PATH)
-  : path.join(__dirname, '..', 'docket.db');
+const DATABASE_URL = process.env.DATABASE_URL;
+if (!DATABASE_URL) {
+  throw new Error('DATABASE_URL must be set');
+}
+
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  // Supabase's Postgres requires TLS; rejectUnauthorized: false avoids
+  // needing its CA bundle installed locally/on Render. The connection
+  // itself is still encrypted — this only skips verifying the certificate
+  // chain, standard practice for connecting to Supabase from app code.
+  ssl: { rejectUnauthorized: false }
+});
+
+pool.on('error', (err) => {
+  // A background/idle client emitting an error (e.g. the connection was
+  // dropped) would otherwise crash the whole process as an uncaught
+  // exception — log it and let the pool reconnect on the next query.
+  console.error('Unexpected Postgres pool error:', err);
+});
+
 const SCHEMA_PATH = path.join(__dirname, 'schema.sql');
 
-fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+// Applies schema.sql on boot — every statement uses CREATE TABLE/INDEX IF
+// NOT EXISTS, so this is safe to re-run and doubles as the migration path
+// for a fresh database. pool.query() with no parameters uses Postgres's
+// simple query protocol, which (unlike a parameterized query) allows
+// multiple semicolon-separated statements in one call.
+async function ensureSchema() {
+  const schema = fs.readFileSync(SCHEMA_PATH, 'utf8');
+  await pool.query(schema);
+}
 
-const db = new Database(DB_PATH);
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+// Runs `fn` against a single checked-out client inside BEGIN/COMMIT —
+// unlike better-sqlite3's synchronous db.transaction(), a Postgres
+// transaction needs one dedicated connection for its whole lifetime
+// rather than pool.query()'s "any connection, per call" default, or two
+// statements in the "same transaction" could actually land on different
+// connections. Rolls back and rethrows on any failure inside `fn`.
+async function withTransaction(fn) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
 
-// Apply schema on every startup — all statements use CREATE TABLE IF NOT
-// EXISTS, so this is safe to re-run and doubles as a lightweight migration
-// for anyone who pulls a fresh copy of the repo without the .db file.
-const schema = fs.readFileSync(SCHEMA_PATH, 'utf8');
-db.exec(schema);
-
-// Both migrations below are idempotent (they check current state before
-// doing anything), so it's safe to run them on every boot rather than
-// tracking a separate "have I migrated" flag.
-const { ensureAttachmentColumns } = require('./migrate-attachments');
-ensureAttachmentColumns(db);
-
-const { migrateToAuthLayer } = require('./migrate-to-auth-layer');
-migrateToAuthLayer(db);
-
-module.exports = db;
+module.exports = pool;
+module.exports.ensureSchema = ensureSchema;
+module.exports.withTransaction = withTransaction;

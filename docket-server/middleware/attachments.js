@@ -3,6 +3,7 @@ const db = require('../db/connection');
 const { requireAuth } = require('../middleware/authenticate');
 const { getTicket, canAccessTicket } = require('../middleware/authorize');
 const { fetchAttachmentFile } = require('../utils/attachment-storage');
+const { asyncHandler } = require('../utils/async-handler');
 
 const router = express.Router();
 
@@ -18,17 +19,20 @@ const TICKET_ACCESS = { allowCustomer: true, allowAssignedAgent: true, allowAdmi
 //    at that point, so it's treated like a public comment's attachment.
 //  - comment_id set -> a reply attachment, which inherits its parent
 //    comment's visibility (public/internal).
-function resolveAttachment(attachmentId) {
-  const attachment = db.prepare('SELECT * FROM ticket_attachments WHERE id = ?').get(attachmentId);
+async function resolveAttachment(attachmentId) {
+  const attachmentResult = await db.query('SELECT * FROM ticket_attachments WHERE id = $1', [attachmentId]);
+  const attachment = attachmentResult.rows[0];
   if (!attachment) return null;
 
   if (attachment.ticket_id) {
     return { attachment, ticketId: attachment.ticket_id, visibility: 'public' };
   }
 
-  const comment = db
-    .prepare('SELECT ticket_id, visibility FROM ticket_comments WHERE id = ?')
-    .get(attachment.comment_id);
+  const commentResult = await db.query(
+    'SELECT ticket_id, visibility FROM ticket_comments WHERE id = $1',
+    [attachment.comment_id]
+  );
+  const comment = commentResult.rows[0];
   // Not reachable given the FK + CHECK constraint, but a comment-less
   // attachment has nothing to authorize against.
   if (!comment) return null;
@@ -47,13 +51,13 @@ function resolveAttachment(attachmentId) {
 // customer is asking for. A 403 or a different message would confirm to
 // an unauthorized caller that a given attachment id is real — the same
 // reasoning as the visibility=internal case in comments.js.
-router.get('/:id', requireAuth(), async (req, res) => {
-  const resolved = resolveAttachment(req.params.id);
+router.get('/:id', requireAuth(), asyncHandler(async (req, res) => {
+  const resolved = await resolveAttachment(req.params.id);
   if (!resolved) {
     return res.status(404).json({ error: 'attachment not found' });
   }
 
-  const ticket = getTicket(resolved.ticketId);
+  const ticket = await getTicket(resolved.ticketId);
   if (!ticket || !canAccessTicket(req.actor, ticket, TICKET_ACCESS)) {
     return res.status(404).json({ error: 'attachment not found' });
   }
@@ -67,9 +71,9 @@ router.get('/:id', requireAuth(), async (req, res) => {
     return res.status(404).json({ error: 'attachment not found' });
   }
 
-  // Every check above is identical to the local-disk version. Only the
-  // last step changes: instead of streaming a local file, fetch the
-  // bytes from Supabase Storage and write them to the response
+  // Every check above is identical whether the metadata lives in SQLite
+  // or Postgres. Only the last step ever touched a different store:
+  // fetch the bytes from Supabase Storage and write them to the response
   // ourselves. The client still only ever talks to our server — it never
   // sees a Supabase URL or the storedPath key.
   const buffer = await fetchAttachmentFile(resolved.attachment.stored_path);
@@ -81,6 +85,6 @@ router.get('/:id', requireAuth(), async (req, res) => {
   res.setHeader('Content-Type', resolved.attachment.mime_type || 'application/octet-stream');
   res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
   res.send(buffer);
-});
+}));
 
 module.exports = router;

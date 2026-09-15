@@ -1,20 +1,24 @@
 {
   "name": "docket-server",
   "version": "0.1.0",
-  "description": "Local API + SQLite database for the Docket support ticket portal",
+  "description": "API for the Docket support ticket portal, backed by Supabase (Postgres + Storage)",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
     "seed": "node db/seed.js",
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "migrate-to-postgres": "node db/migrate-to-postgres.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.116.0",
     "bcryptjs": "^2.4.3",
-    "better-sqlite3": "^11.3.0",
     "cors": "^2.8.5",
     "dotenv": "^17.4.2",
-    "express": "^4.21.0"
+    "express": "^4.21.0",
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "better-sqlite3": "^13.0.3"
   }
 }

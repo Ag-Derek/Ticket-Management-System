@@ -1,15 +1,12 @@
 const express = require('express');
 const db = require('../db/connection');
 const { nextId } = require('../utils/ids');
-const { ensureAttachmentColumns } = require('../db/migrate-attachments');
 const { saveAttachmentFile } = require('../utils/attachment-storage');
 const { requireAuth } = require('../middleware/authenticate');
 const { requireTicketAccess } = require('../middleware/authorize');
+const { asyncHandler } = require('../utils/async-handler');
 
 const router = express.Router();
-
-// Safe to call on every boot — see migrate-attachments.js for why.
-ensureAttachmentColumns(db);
 
 const VALID_CATEGORIES = ['Network', 'Application', 'Hardware', 'Access & Identity'];
 const VALID_PRIORITIES = ['Low', 'Medium', 'High', 'Critical'];
@@ -59,53 +56,57 @@ function canTransition(from, to) {
 
 // Customer-visible attachment count: creation-time attachments always
 // count; chat attachments only count if they were posted on a public
-// comment — matches bumpTicketFileCount's "only bump on public" rule in
-// app.js, so an internal note's attachment doesn't show up to the customer.
-function attachmentCount(ticketId) {
-  // ticket_attachments enforces ticket_id XOR comment_id (see schema.sql),
-  // so a comment's attachment never carries the ticket_id directly —
-  // reach its owning ticket through comment_id -> ticket_comments.ticket_id.
-  return db.prepare(
+// comment. ticket_attachments enforces ticket_id XOR comment_id (see
+// schema.sql), so a comment's attachment never carries the ticket_id
+// directly — reach its owning ticket through comment_id ->
+// ticket_comments.ticket_id.
+async function attachmentCount(ticketId) {
+  const result = await db.query(
     `SELECT COUNT(*) AS n FROM ticket_attachments ta
      LEFT JOIN ticket_comments tc ON ta.comment_id = tc.id
-     WHERE ta.ticket_id = ? OR (tc.ticket_id = ? AND tc.visibility = 'public')`
-  ).get(ticketId, ticketId).n;
+     WHERE ta.ticket_id = $1 OR (tc.ticket_id = $1 AND tc.visibility = 'public')`,
+    [ticketId]
+  );
+  return Number(result.rows[0].n);
 }
 
 // Creation-time attachments only (comment_id IS NULL) — chat attachments
-// travel with their comment instead (see comments.js). stored_path is a
-// server filesystem path, not something the client needs or should see —
-// the client only ever needs the id, to build a GET /api/attachments/:id
-// download link.
-function ticketAttachments(ticketId) {
-  return db.prepare(
+// travel with their comment instead (see comments.js). stored_path is
+// never sent to the client — it only ever needs the id, to build a
+// GET /api/attachments/:id download link.
+async function ticketAttachments(ticketId) {
+  const result = await db.query(
     `SELECT id, filename, mime_type, size_bytes FROM ticket_attachments
-     WHERE ticket_id = ? AND comment_id IS NULL
-     ORDER BY id ASC`
-  ).all(ticketId);
+     WHERE ticket_id = $1 AND comment_id IS NULL
+     ORDER BY id ASC`,
+    [ticketId]
+  );
+  return result.rows;
 }
 
 // LEFT JOIN (not JOIN) so a ticket never disappears from a queue just
 // because its requester's user record is missing/inconsistent — requester_email
 // simply comes back null in that case, same as any other optional field.
-function ticketWithComments(id) {
-  const ticket = db
-    .prepare('SELECT t.*, u.email AS requester_email FROM tickets t LEFT JOIN users u ON u.id = t.user_id WHERE t.id = ?')
-    .get(id);
+async function ticketWithComments(id) {
+  const ticketResult = await db.query(
+    'SELECT t.*, u.email AS requester_email FROM tickets t LEFT JOIN users u ON u.id = t.user_id WHERE t.id = $1',
+    [id]
+  );
+  const ticket = ticketResult.rows[0];
   if (!ticket) return null;
-  const comments = db
-    .prepare('SELECT * FROM ticket_comments WHERE ticket_id = ? ORDER BY created_at ASC')
-    .all(id);
-  return { ...ticket, attachment_count: attachmentCount(id), attachments: ticketAttachments(id), comments };
+  const commentsResult = await db.query(
+    'SELECT * FROM ticket_comments WHERE ticket_id = $1 ORDER BY created_at ASC',
+    [id]
+  );
+  const [count, attachments] = await Promise.all([attachmentCount(id), ticketAttachments(id)]);
+  return { ...ticket, attachment_count: count, attachments, comments: commentsResult.rows };
 }
 
 // Validates one incoming attachment payload and — if it carries content —
-// writes it to disk immediately, before any DB row exists for it. Accepts
-// the { filename, content_base64, mime_type? } shape the client sends;
-// also tolerates a bare filename string or an object with no
-// content_base64 (nothing to write, so stored_path stays null — same as
-// an attachment recorded before real file storage existed, or record of a
-// name whose upload failed).
+// uploads it immediately, before any DB row exists for it. Accepts the
+// { filename, content_base64, mime_type? } shape the client sends; also
+// tolerates a bare filename string or an object with no content_base64
+// (nothing to upload, so stored_path stays null).
 async function normalizeIncomingAttachment(ticketId, a) {
   if (!a) return null;
   if (typeof a === 'string') {
@@ -128,7 +129,7 @@ async function normalizeIncomingAttachment(ticketId, a) {
 // the body's user_id is only honored when an admin is creating a ticket
 // on a customer's behalf (e.g. phone-in tickets). Agents cannot create
 // tickets at all, per the authorization matrix.
-router.post('/', requireAuth(['user', 'admin']), async (req, res) => {
+router.post('/', requireAuth(['user', 'admin']), asyncHandler(async (req, res) => {
   const { subject, description, category, priority, affected_service, attachments } = req.body || {};
 
   const user_id = req.actor.role === 'user' ? req.actor.id : req.body?.user_id;
@@ -143,17 +144,16 @@ router.post('/', requireAuth(['user', 'admin']), async (req, res) => {
     return res.status(400).json({ error: `priority must be one of: ${VALID_PRIORITIES.join(', ')}` });
   }
 
-  const user = db.prepare('SELECT id FROM users WHERE id = ?').get(user_id);
-  if (!user) return res.status(404).json({ error: 'user_id does not exist' });
+  const userResult = await db.query('SELECT id FROM users WHERE id = $1', [user_id]);
+  if (!userResult.rows[0]) return res.status(404).json({ error: 'user_id does not exist' });
 
-  const id = nextId(db, 'tickets', 'TKT');
+  const id = await nextId(db, 'tickets', 'TKT');
   const team = TEAM_BY_CATEGORY[category];
   const sla = slaSummary(priority);
 
-  // Files are written to disk before the ticket row exists — a size-cap
-  // failure here means the ticket is never created at all, rather than
-  // ending up with a ticket that references a half-written attachment
-  // list.
+  // Files are uploaded before the ticket row exists — a size-cap failure
+  // here means the ticket is never created at all, rather than ending up
+  // with a ticket that references a half-written attachment list.
   let normalizedAttachments;
   try {
     normalizedAttachments = Array.isArray(attachments)
@@ -163,35 +163,31 @@ router.post('/', requireAuth(['user', 'admin']), async (req, res) => {
     return res.status(400).json({ error: err.message });
   }
 
-  const insertTicket = db.transaction(() => {
-    db.prepare(
-      `INSERT INTO tickets
-         (id, user_id, subject, description, category, priority, status,
-          affected_service, assigned_team, sla_summary)
-       VALUES (?, ?, ?, ?, ?, ?, 'Created', ?, ?, ?)`
-    ).run(id, user_id, subject.trim(), description.trim(), category, priority, affected_service || null, team, sla);
-
-    const insertAttachment = db.prepare(
-      `INSERT INTO ticket_attachments (ticket_id, filename, mime_type, size_bytes, stored_path)
-       VALUES (?, ?, ?, ?, ?)`
-    );
-    normalizedAttachments.forEach((a) => {
-      insertAttachment.run(id, a.filename, a.mime_type, a.size_bytes, a.stored_path);
-    });
-  });
   try {
-    insertTicket();
+    await db.withTransaction(async (client) => {
+      await client.query(
+        `INSERT INTO tickets
+           (id, user_id, subject, description, category, priority, status,
+            affected_service, assigned_team, sla_summary)
+         VALUES ($1, $2, $3, $4, $5, $6, 'Created', $7, $8, $9)`,
+        [id, user_id, subject.trim(), description.trim(), category, priority, affected_service || null, team, sla]
+      );
+
+      for (const a of normalizedAttachments) {
+        await client.query(
+          `INSERT INTO ticket_attachments (ticket_id, filename, mime_type, size_bytes, stored_path)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [id, a.filename, a.mime_type, a.size_bytes, a.stored_path]
+        );
+      }
+    });
   } catch (err) {
-    // Route handler is async, so an uncaught synchronous throw here would
-    // become an unhandled rejection and crash the whole process (Node
-    // terminates on those by default) instead of just failing this
-    // request — catch and respond with a normal 500 like any other error.
     console.error('POST /api/tickets: failed to persist ticket', err);
     return res.status(500).json({ error: 'failed to create ticket' });
   }
 
-  res.status(201).json(ticketWithComments(id));
-});
+  res.status(201).json(await ticketWithComments(id));
+}));
 
 // GET /api/tickets?user_id=...&assigned_agent_id=...&status=...
 // user_id/assigned_agent_id in the query string are only advisory now —
@@ -199,37 +195,53 @@ router.post('/', requireAuth(['user', 'admin']), async (req, res) => {
 // server-side, regardless of what the query string says, so no actor can
 // list another customer's or another agent's tickets by editing the URL.
 // Admins may filter by whatever they like, including neither (all tickets).
-router.get('/', requireAuth(), (req, res) => {
+router.get('/', requireAuth(), asyncHandler(async (req, res) => {
   const { status } = req.query;
   let sql = 'SELECT t.*, u.email AS requester_email FROM tickets t LEFT JOIN users u ON u.id = t.user_id WHERE 1=1';
   const params = [];
 
   if (req.actor.role === 'user') {
-    sql += ' AND t.user_id = ?'; params.push(req.actor.id);
+    params.push(req.actor.id); sql += ` AND t.user_id = $${params.length}`;
   } else if (req.actor.role === 'agent') {
-    sql += ' AND t.assigned_agent_id = ?'; params.push(req.actor.id);
+    params.push(req.actor.id); sql += ` AND t.assigned_agent_id = $${params.length}`;
   } else if (req.actor.role === 'admin') {
-    if (req.query.user_id) { sql += ' AND t.user_id = ?'; params.push(req.query.user_id); }
-    if (req.query.assigned_agent_id) { sql += ' AND t.assigned_agent_id = ?'; params.push(req.query.assigned_agent_id); }
+    if (req.query.user_id) { params.push(req.query.user_id); sql += ` AND t.user_id = $${params.length}`; }
+    if (req.query.assigned_agent_id) { params.push(req.query.assigned_agent_id); sql += ` AND t.assigned_agent_id = $${params.length}`; }
   }
-  if (status) { sql += ' AND t.status = ?'; params.push(status); }
+  if (status) { params.push(status); sql += ` AND t.status = $${params.length}`; }
 
   sql += ' ORDER BY t.created_at DESC';
-  const rows = db.prepare(sql).all(...params);
-  res.json(rows.map((t) => ({ ...t, attachment_count: attachmentCount(t.id), attachments: ticketAttachments(t.id) })));
-});
+
+  try {
+    const result = await db.query(sql, params);
+    const rows = await Promise.all(result.rows.map(async (t) => ({
+      ...t,
+      attachment_count: await attachmentCount(t.id),
+      attachments: await ticketAttachments(t.id)
+    })));
+    res.json(rows);
+  } catch (err) {
+    console.error('GET /api/tickets error:', err);
+    res.status(500).json({ error: 'failed to load tickets' });
+  }
+}));
 
 // GET /api/tickets/:id  (includes comments + attachment_count + attachments)
 router.get(
   '/:id',
   requireAuth(),
   requireTicketAccess({ allowCustomer: true, allowAssignedAgent: true, allowAdmin: true }),
-  (req, res) => {
+  asyncHandler(async (req, res) => {
     // req.ticket was already fetched and permission-checked by
     // requireTicketAccess; ticketWithComments re-fetches so it can attach
     // comments/attachments in the same shape as every other response.
-    res.json(ticketWithComments(req.params.id));
-  }
+    try {
+      res.json(await ticketWithComments(req.params.id));
+    } catch (err) {
+      console.error('GET /api/tickets/:id error:', err);
+      res.status(500).json({ error: 'failed to load ticket' });
+    }
+  })
 );
 
 // PATCH /api/tickets/:id/assign
@@ -237,19 +249,17 @@ router.get(
 // Mirrors app.js's reassign handler: claiming an unassigned Created ticket
 // bumps it to Assigned; sending it back to Unassigned resets it to Created
 // (unless it's Resolved/Closed, which stays put either way).
-// Admin-only for now. Agent self-claim/reassignment can be added later as
-// its own narrower rule once the frontend workflow for it is settled —
-// bolting it onto this handler prematurely risks agents reassigning
-// tickets away from themselves or each other.
-router.patch('/:id/assign', requireAuth(['admin']), (req, res) => {
-  const ticket = db.prepare('SELECT * FROM tickets WHERE id = ?').get(req.params.id);
+// Admin-only for now.
+router.patch('/:id/assign', requireAuth(['admin']), asyncHandler(async (req, res) => {
+  const ticketResult = await db.query('SELECT * FROM tickets WHERE id = $1', [req.params.id]);
+  const ticket = ticketResult.rows[0];
   if (!ticket) return res.status(404).json({ error: 'not found' });
 
   const assignedAgentId = req.body && req.body.assigned_agent_id ? req.body.assigned_agent_id : null;
 
   if (assignedAgentId) {
-    const agent = db.prepare('SELECT id FROM agents WHERE id = ?').get(assignedAgentId);
-    if (!agent) return res.status(404).json({ error: 'assigned_agent_id does not exist' });
+    const agentResult = await db.query('SELECT id FROM agents WHERE id = $1', [assignedAgentId]);
+    if (!agentResult.rows[0]) return res.status(404).json({ error: 'assigned_agent_id does not exist' });
   }
 
   let newStatus = ticket.status;
@@ -259,12 +269,18 @@ router.patch('/:id/assign', requireAuth(['admin']), (req, res) => {
     newStatus = 'Created';
   }
 
-  db.prepare(
-    `UPDATE tickets SET assigned_agent_id = ?, status = ?, updated_at = datetime('now') WHERE id = ?`
-  ).run(assignedAgentId, newStatus, req.params.id);
+  try {
+    await db.query(
+      `UPDATE tickets SET assigned_agent_id = $1, status = $2, updated_at = now() WHERE id = $3`,
+      [assignedAgentId, newStatus, req.params.id]
+    );
+  } catch (err) {
+    console.error('PATCH /:id/assign error:', err);
+    return res.status(500).json({ error: 'failed to update assignment' });
+  }
 
-  res.json(ticketWithComments(req.params.id));
-});
+  res.json(await ticketWithComments(req.params.id));
+}));
 
 // PATCH /api/tickets/:id/status
 // body: { status, resolution_summary?, escalated_to?, escalation_reason? }
@@ -275,36 +291,42 @@ router.patch(
   '/:id/status',
   requireAuth(),
   requireTicketAccess({ allowAssignedAgent: true, allowAdmin: true }),
-  (req, res) => {
-  const ticket = req.ticket;
+  asyncHandler(async (req, res) => {
+    const ticket = req.ticket;
 
-  const { status, resolution_summary, escalated_to, escalation_reason } = req.body || {};
-  if (!status || !canTransition(ticket.status, status)) {
-    return res.status(400).json({
-      error: `cannot move ticket from "${ticket.status}" to "${status}"`,
-      allowed_next_states: STATUS_TRANSITIONS[ticket.status] || []
-    });
-  }
+    const { status, resolution_summary, escalated_to, escalation_reason } = req.body || {};
+    if (!status || !canTransition(ticket.status, status)) {
+      return res.status(400).json({
+        error: `cannot move ticket from "${ticket.status}" to "${status}"`,
+        allowed_next_states: STATUS_TRANSITIONS[ticket.status] || []
+      });
+    }
 
-  if (status === 'Resolved' && (!resolution_summary || !resolution_summary.trim())) {
-    return res.status(400).json({ error: 'resolution_summary is required to resolve a ticket' });
-  }
-  if (status === 'Escalated' && (!escalated_to || !escalation_reason || !escalation_reason.trim())) {
-    return res.status(400).json({ error: 'escalated_to and escalation_reason are both required to escalate a ticket' });
-  }
+    if (status === 'Resolved' && (!resolution_summary || !resolution_summary.trim())) {
+      return res.status(400).json({ error: 'resolution_summary is required to resolve a ticket' });
+    }
+    if (status === 'Escalated' && (!escalated_to || !escalation_reason || !escalation_reason.trim())) {
+      return res.status(400).json({ error: 'escalated_to and escalation_reason are both required to escalate a ticket' });
+    }
 
-  db.prepare(
-    `UPDATE tickets
-     SET status = ?,
-         resolution_summary = COALESCE(?, resolution_summary),
-         escalated_to = COALESCE(?, escalated_to),
-         escalation_reason = COALESCE(?, escalation_reason),
-         updated_at = datetime('now')
-     WHERE id = ?`
-  ).run(status, resolution_summary || null, escalated_to || null, escalation_reason || null, req.params.id);
+    try {
+      await db.query(
+        `UPDATE tickets
+         SET status = $1,
+             resolution_summary = COALESCE($2, resolution_summary),
+             escalated_to = COALESCE($3, escalated_to),
+             escalation_reason = COALESCE($4, escalation_reason),
+             updated_at = now()
+         WHERE id = $5`,
+        [status, resolution_summary || null, escalated_to || null, escalation_reason || null, req.params.id]
+      );
+    } catch (err) {
+      console.error('PATCH /:id/status error:', err);
+      return res.status(500).json({ error: 'failed to update status' });
+    }
 
-  res.json(ticketWithComments(req.params.id));
-  }
+    res.json(await ticketWithComments(req.params.id));
+  })
 );
 
 // PATCH /api/tickets/:id/csat  { csat_rating (1-5), csat_comment? }
@@ -315,28 +337,34 @@ router.patch(
   '/:id/csat',
   requireAuth(),
   requireTicketAccess({ allowCustomer: true }),
-  (req, res) => {
-  const ticket = req.ticket;
+  asyncHandler(async (req, res) => {
+    const ticket = req.ticket;
 
-  if (ticket.status !== 'Closed') {
-    return res.status(400).json({ error: 'ticket must be Closed before it can be rated' });
-  }
-  if (ticket.csat_rating != null) {
-    return res.status(400).json({ error: 'ticket has already been rated' });
-  }
+    if (ticket.status !== 'Closed') {
+      return res.status(400).json({ error: 'ticket must be Closed before it can be rated' });
+    }
+    if (ticket.csat_rating != null) {
+      return res.status(400).json({ error: 'ticket has already been rated' });
+    }
 
-  const rating = Number(req.body && req.body.csat_rating);
-  if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
-    return res.status(400).json({ error: 'csat_rating must be an integer 1-5' });
-  }
-  const comment = (req.body && req.body.csat_comment) || null;
+    const rating = Number(req.body && req.body.csat_rating);
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+      return res.status(400).json({ error: 'csat_rating must be an integer 1-5' });
+    }
+    const comment = (req.body && req.body.csat_comment) || null;
 
-  db.prepare(
-    `UPDATE tickets SET csat_rating = ?, csat_comment = ?, updated_at = datetime('now') WHERE id = ?`
-  ).run(rating, comment, req.params.id);
+    try {
+      await db.query(
+        `UPDATE tickets SET csat_rating = $1, csat_comment = $2, updated_at = now() WHERE id = $3`,
+        [rating, comment, req.params.id]
+      );
+    } catch (err) {
+      console.error('PATCH /:id/csat error:', err);
+      return res.status(500).json({ error: 'failed to submit feedback' });
+    }
 
-  res.json(ticketWithComments(req.params.id));
-  }
+    res.json(await ticketWithComments(req.params.id));
+  })
 );
 
 module.exports = router;

@@ -16,11 +16,8 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // identity" trust level as agent self-signup — see agents.js), so a
 // session token is minted and returned right here rather than requiring
 // a separate POST /api/auth/login call the customer has no credentials
-// for. This doesn't lower security versus before: anyone could already
-// "become" a given customer email with zero verification; now that also
-// produces a real signed token instead of leaving the client with
-// nothing to authenticate its later requireAuth()-protected calls with.
-router.post('/', (req, res) => {
+// for.
+router.post('/', async (req, res) => {
   const { full_name, email, phone, department, organization } = req.body || {};
 
   if (!full_name || !full_name.trim()) {
@@ -32,41 +29,62 @@ router.post('/', (req, res) => {
 
   const normalizedEmail = email.trim().toLowerCase();
 
-  const existing = db.prepare('SELECT * FROM users WHERE email = ?').get(normalizedEmail);
-  if (existing) {
-    const token = signToken({ ownerType: 'user', ownerId: existing.id });
-    return res.status(200).json({ ...existing, returning: true, token });
+  try {
+    const existingResult = await db.query('SELECT * FROM users WHERE email = $1', [normalizedEmail]);
+    const existing = existingResult.rows[0];
+    if (existing) {
+      const token = signToken({ ownerType: 'user', ownerId: existing.id });
+      return res.status(200).json({ ...existing, returning: true, token });
+    }
+
+    const id = await nextId(db, 'users', 'USR');
+    const insertResult = await db.query(
+      `INSERT INTO users (id, full_name, email, phone, department, organization)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [id, full_name.trim(), normalizedEmail, phone || null, department || null, organization || null]
+    );
+    const token = signToken({ ownerType: 'user', ownerId: id });
+    res.status(201).json({ ...insertResult.rows[0], returning: false, token });
+  } catch (err) {
+    console.error('POST /api/users error:', err);
+    res.status(500).json({ error: 'failed to save profile' });
   }
-
-  const id = nextId(db, 'users', 'USR');
-  db.prepare(
-    `INSERT INTO users (id, full_name, email, phone, department, organization)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(id, full_name.trim(), normalizedEmail, phone || null, department || null, organization || null);
-
-  const created = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
-  const token = signToken({ ownerType: 'user', ownerId: id });
-  res.status(201).json({ ...created, returning: false, token });
 });
 
 // GET /api/users/by-email/:email
-router.get('/by-email/:email', (req, res) => {
+router.get('/by-email/:email', async (req, res) => {
   const email = req.params.email.trim().toLowerCase();
-  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
-  if (!user) return res.status(404).json({ error: 'not found' });
-  res.json(user);
+  try {
+    const result = await db.query('SELECT * FROM users WHERE email = $1', [email]);
+    if (!result.rows[0]) return res.status(404).json({ error: 'not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('GET /api/users/by-email error:', err);
+    res.status(500).json({ error: 'failed to load user' });
+  }
 });
 
 // GET /api/users/:id
-router.get('/:id', (req, res) => {
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
-  if (!user) return res.status(404).json({ error: 'not found' });
-  res.json(user);
+router.get('/:id', async (req, res) => {
+  try {
+    const result = await db.query('SELECT * FROM users WHERE id = $1', [req.params.id]);
+    if (!result.rows[0]) return res.status(404).json({ error: 'not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('GET /api/users/:id error:', err);
+    res.status(500).json({ error: 'failed to load user' });
+  }
 });
 
 // GET /api/users
-router.get('/', (req, res) => {
-  res.json(db.prepare('SELECT * FROM users ORDER BY created_at DESC').all());
+router.get('/', async (req, res) => {
+  try {
+    const result = await db.query('SELECT * FROM users ORDER BY created_at DESC');
+    res.json(result.rows);
+  } catch (err) {
+    console.error('GET /api/users error:', err);
+    res.status(500).json({ error: 'failed to load users' });
+  }
 });
 
 module.exports = router;

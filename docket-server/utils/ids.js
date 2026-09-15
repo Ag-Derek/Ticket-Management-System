@@ -1,19 +1,20 @@
 // Generates the next sequential ID for a given prefix/table, e.g.
-//   nextId(db, 'users', 'USR')  ->  'USR-2026-000001', then '...000002', ...
+//   await nextId(db, 'users', 'USR')  ->  'USR-2026-000001', then '...000002', ...
 //
 // Looks at what's actually in the table rather than keeping an in-memory
-// counter, so it's correct even across restarts and safe under the
-// synchronous, single-connection model better-sqlite3 uses here.
+// counter, so it's correct across restarts/redeploys.
 
-function nextId(db, table, prefix) {
+async function nextId(db, table, prefix) {
   const year = new Date().getFullYear();
   const likePattern = `${prefix}-${year}-%`;
 
-  const row = db
-    .prepare(`SELECT id FROM ${table} WHERE id LIKE ? ORDER BY id DESC LIMIT 1`)
-    .get(likePattern);
+  const result = await db.query(
+    `SELECT id FROM ${table} WHERE id LIKE $1 ORDER BY id DESC LIMIT 1`,
+    [likePattern]
+  );
 
   let n = 1;
+  const row = result.rows[0];
   if (row) {
     const parts = row.id.split('-');
     const lastN = parseInt(parts[parts.length - 1], 10);

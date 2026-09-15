@@ -512,7 +512,9 @@ document.addEventListener('DOMContentLoaded', function () {
   // no 'T' separator, no zone) — coerce it into something `Date` parses
   // correctly before formatting, the same h:mm AM/PM format the old chat used.
   function formatCommentTime(raw) {
-    var d = new Date(String(raw || '').replace(' ', 'T') + 'Z');
+    // The API now returns real ISO-8601 timestamps (Postgres timestamptz,
+    // JSON-serialized) — parses directly, no reformatting needed.
+    var d = new Date(String(raw || ''));
     if (isNaN(d.getTime())) return '';
     var h = d.getHours(); var m = d.getMinutes();
     var ampm = h >= 12 ? 'PM' : 'AM';

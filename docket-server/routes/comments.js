@@ -1,18 +1,13 @@
 const express = require('express');
 const db = require('../db/connection');
-const { ensureAttachmentColumns } = require('../db/migrate-attachments');
 const { saveAttachmentFile } = require('../utils/attachment-storage');
 const { requireAuth } = require('../middleware/authenticate');
 const { requireTicketAccess } = require('../middleware/authorize');
+const { asyncHandler } = require('../utils/async-handler');
 
 // mergeParams so this router can read :ticketId from the parent
 // tickets router it's mounted under (see server.js).
 const router = express.Router({ mergeParams: true });
-
-// Safe to call on every boot — see migrate-attachments.js for why. Also
-// called from tickets.js; either one running first is fine, it's a no-op
-// once the columns exist.
-ensureAttachmentColumns(db);
 
 // Every ticket-access route below allows the same three actors: the
 // customer who owns the ticket, the agent currently assigned to it, or
@@ -31,19 +26,18 @@ const ROLE_TO_AUTHOR_TYPE = { user: 'customer', agent: 'agent', admin: 'admin' }
 // record — never from anything the client sent. Falls back to a generic
 // label rather than erroring if the row is somehow missing, since a
 // missing display name shouldn't block posting a comment.
-function lookupActorName(actor) {
+async function lookupActorName(actor) {
   const table = { user: 'users', agent: 'agents', admin: 'admins' }[actor.role];
-  const row = table
-    ? db.prepare(`SELECT full_name FROM ${table} WHERE id = ?`).get(actor.id)
-    : null;
-  return row ? row.full_name : { user: 'Customer', agent: 'Agent', admin: 'Admin' }[actor.role];
+  if (!table) return { user: 'Customer', agent: 'Agent', admin: 'Admin' }[actor.role];
+  const result = await db.query(`SELECT full_name FROM ${table} WHERE id = $1`, [actor.id]);
+  return result.rows[0] ? result.rows[0].full_name : { user: 'Customer', agent: 'Agent', admin: 'Admin' }[actor.role];
 }
 
 // GET /api/tickets/:ticketId/comments?visibility=public|internal
 // requireTicketAccess already 401s (no/invalid token), 404s (no such
 // ticket), and 403s (wrong actor for this ticket) before this handler
 // ever runs, so it only has to worry about visibility filtering.
-router.get('/', requireAuth(), requireTicketAccess(TICKET_ACCESS), (req, res) => {
+router.get('/', requireAuth(), requireTicketAccess(TICKET_ACCESS), asyncHandler(async (req, res) => {
   const { visibility } = req.query;
   const canSeeInternal = req.actor.role === 'agent' || req.actor.role === 'admin';
 
@@ -54,12 +48,12 @@ router.get('/', requireAuth(), requireTicketAccess(TICKET_ACCESS), (req, res) =>
     return res.json([]);
   }
 
-  let sql = 'SELECT * FROM ticket_comments WHERE ticket_id = ?';
+  let sql = 'SELECT * FROM ticket_comments WHERE ticket_id = $1';
   const params = [req.params.ticketId];
 
   if (visibility) {
-    sql += ' AND visibility = ?';
     params.push(visibility);
+    sql += ` AND visibility = $${params.length}`;
   } else if (!canSeeInternal) {
     // No filter requested: a customer's unfiltered view still never
     // includes internal notes.
@@ -67,22 +61,21 @@ router.get('/', requireAuth(), requireTicketAccess(TICKET_ACCESS), (req, res) =>
   }
   sql += ' ORDER BY created_at ASC';
 
-  const comments = db.prepare(sql).all(...params);
+  const commentsResult = await db.query(sql, params);
   // Files carry an id (so the client can build a download link) and
-  // filename only — stored_path is a server filesystem path and never
-  // goes to the client.
-  const withFiles = comments.map((c) => ({
-    ...c,
-    files: db.prepare('SELECT id, filename FROM ticket_attachments WHERE comment_id = ?').all(c.id)
+  // filename only — stored_path never goes to the client.
+  const withFiles = await Promise.all(commentsResult.rows.map(async (c) => {
+    const filesResult = await db.query('SELECT id, filename FROM ticket_attachments WHERE comment_id = $1', [c.id]);
+    return { ...c, files: filesResult.rows };
   }));
   res.json(withFiles);
-});
+}));
 
 // Validates one incoming attachment payload and — if it carries content —
-// writes it to disk immediately. Same contract as tickets.js's
+// uploads it immediately. Same contract as tickets.js's
 // normalizeIncomingAttachment (kept as a separate copy here since these
 // two routers don't currently share a utils file for the validation
-// shape, only for the actual disk-write logic in attachment-storage.js).
+// shape, only for the actual upload logic in attachment-storage.js).
 async function normalizeIncomingAttachment(ticketId, a) {
   if (!a) return null;
   if (typeof a === 'string') {
@@ -100,19 +93,18 @@ async function normalizeIncomingAttachment(ticketId, a) {
 
 // POST /api/tickets/:ticketId/comments
 // { visibility?: 'public'|'internal', body, files?: [{ filename, content_base64, mime_type? }, ...] }
-// author_type and author_name are NOT read from the body anymore — they
-// come entirely from req.actor, set by requireAuth() from the verified
-// token. A message needs text or at least one file — matches the chat
-// composer, which blocks sending an empty message with no attachment.
-router.post('/', requireAuth(), requireTicketAccess(TICKET_ACCESS), async (req, res) => {
+// author_type and author_name are NOT read from the body — they come
+// entirely from req.actor, set by requireAuth() from the verified token.
+// A message needs text or at least one file — matches the chat composer,
+// which blocks sending an empty message with no attachment.
+router.post('/', requireAuth(), requireTicketAccess(TICKET_ACCESS), asyncHandler(async (req, res) => {
   const { visibility, body, files } = req.body || {};
   const authorType = ROLE_TO_AUTHOR_TYPE[req.actor.role];
-  const authorName = lookupActorName(req.actor);
+  const authorName = await lookupActorName(req.actor);
 
   // requireTicketAccess has already confirmed the ticket exists and this
   // actor may act on it, so attachment writes below only ever happen for
-  // an authorized caller — unlike before, when a valid ticketId alone was
-  // enough to get files saved to disk.
+  // an authorized caller.
   let normalizedFiles;
   try {
     normalizedFiles = Array.isArray(files)
@@ -136,44 +128,38 @@ router.post('/', requireAuth(), requireTicketAccess(TICKET_ACCESS), async (req, 
     return res.status(400).json({ error: 'customer comments cannot be marked internal' });
   }
 
-  const insertComment = db.transaction(() => {
-    const result = db.prepare(
-      `INSERT INTO ticket_comments (ticket_id, author_type, author_name, visibility, body)
-       VALUES (?, ?, ?, ?, ?)`
-    ).run(req.params.ticketId, authorType, authorName, vis, (body || '').trim());
-
-    if (normalizedFiles.length) {
-      // comment_id only, ticket_id left null — ticket_attachments' CHECK
-      // constraint requires exactly one of the two (see schema.sql /
-      // migrate-to-auth-layer.js). The owning ticket is reached through
-      // comment_id -> ticket_comments.ticket_id instead.
-      const insertAttachment = db.prepare(
-        `INSERT INTO ticket_attachments (comment_id, filename, mime_type, size_bytes, stored_path)
-         VALUES (?, ?, ?, ?, ?)`
-      );
-      normalizedFiles.forEach((f) => {
-        insertAttachment.run(result.lastInsertRowid, f.filename, f.mime_type, f.size_bytes, f.stored_path);
-      });
-    }
-
-    db.prepare(`UPDATE tickets SET updated_at = datetime('now') WHERE id = ?`).run(req.params.ticketId);
-    return result.lastInsertRowid;
-  });
-
   let commentId;
   try {
-    commentId = insertComment();
+    commentId = await db.withTransaction(async (client) => {
+      const insertResult = await client.query(
+        `INSERT INTO ticket_comments (ticket_id, author_type, author_name, visibility, body)
+         VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+        [req.params.ticketId, authorType, authorName, vis, (body || '').trim()]
+      );
+      const newCommentId = insertResult.rows[0].id;
+
+      // comment_id only, ticket_id left null — ticket_attachments' CHECK
+      // constraint requires exactly one of the two (see schema.sql). The
+      // owning ticket is reached through comment_id -> ticket_comments.ticket_id.
+      for (const f of normalizedFiles) {
+        await client.query(
+          `INSERT INTO ticket_attachments (comment_id, filename, mime_type, size_bytes, stored_path)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [newCommentId, f.filename, f.mime_type, f.size_bytes, f.stored_path]
+        );
+      }
+
+      await client.query(`UPDATE tickets SET updated_at = now() WHERE id = $1`, [req.params.ticketId]);
+      return newCommentId;
+    });
   } catch (err) {
-    // Route handler is async, so an uncaught synchronous throw here would
-    // become an unhandled rejection and crash the whole process instead of
-    // just failing this request — catch and respond with a normal 500.
     console.error('POST /api/tickets/:ticketId/comments: failed to persist comment', err);
     return res.status(500).json({ error: 'failed to post comment' });
   }
 
-  const created = db.prepare('SELECT * FROM ticket_comments WHERE id = ?').get(commentId);
-  const createdFiles = db.prepare('SELECT id, filename FROM ticket_attachments WHERE comment_id = ?').all(commentId);
-  res.status(201).json({ ...created, files: createdFiles });
-});
+  const createdResult = await db.query('SELECT * FROM ticket_comments WHERE id = $1', [commentId]);
+  const createdFilesResult = await db.query('SELECT id, filename FROM ticket_attachments WHERE comment_id = $1', [commentId]);
+  res.status(201).json({ ...createdResult.rows[0], files: createdFilesResult.rows });
+}));
 
 module.exports = router;

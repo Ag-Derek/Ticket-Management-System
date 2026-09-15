@@ -25,18 +25,17 @@ const OWNER_TABLES = [
   { table: 'admins', ownerType: 'admin' }
 ];
 
-function findOwnerByEmail(email, roleHint) {
-  const candidates = OWNER_TABLES
-    .filter((t) => !roleHint || t.ownerType === roleHint)
-    .map(({ table, ownerType }) => {
-      const row = db.prepare(`SELECT id, email, full_name FROM ${table} WHERE email = ?`).get(email);
-      return row ? { ownerType, ...row } : null;
-    })
-    .filter(Boolean);
+async function findOwnerByEmail(email, roleHint) {
+  const candidates = [];
+  for (const { table, ownerType } of OWNER_TABLES) {
+    if (roleHint && ownerType !== roleHint) continue;
+    const result = await db.query(`SELECT id, email, full_name FROM ${table} WHERE email = $1`, [email]);
+    if (result.rows[0]) candidates.push({ ownerType, ...result.rows[0] });
+  }
   return candidates;
 }
 
-router.post('/login', (req, res) => {
+router.post('/login', async (req, res) => {
   const { email, password, role } = req.body || {};
 
   if (!email || !password) {
@@ -46,57 +45,64 @@ router.post('/login', (req, res) => {
     return res.status(400).json({ error: `role must be one of: ${OWNER_TABLES.map((t) => t.ownerType).join(', ')}` });
   }
 
-  const matches = findOwnerByEmail(email, role);
+  try {
+    const matches = await findOwnerByEmail(email, role);
 
-  if (matches.length === 0) {
-    // Same response as a wrong password — don't reveal whether the email
-    // exists at all.
-    return res.status(401).json({ error: 'Invalid email or password' });
-  }
-
-  if (matches.length > 1) {
-    // The same email exists as e.g. both a user and an agent. That's a
-    // data-integrity issue, not something the login route should silently
-    // guess its way through — ask the caller to disambiguate.
-    console.error(`Login: email ${email} matches multiple owner types: ${matches.map((m) => m.ownerType).join(', ')}`);
-    return res.status(409).json({
-      error: 'This email is associated with more than one account type. Specify which one to log in as.',
-      roles: matches.map((m) => m.ownerType)
-    });
-  }
-
-  const owner = matches[0];
-  const cred = db.prepare(
-    'SELECT * FROM auth_credentials WHERE owner_type = ? AND owner_id = ?'
-  ).get(owner.ownerType, owner.id);
-
-  if (!cred || cred.auth_provider !== 'local' || !cred.password_hash) {
-    // No credentials row at all (never set a password), or an SSO-only
-    // account trying to use password login.
-    return res.status(401).json({ error: 'Invalid email or password' });
-  }
-
-  const ok = bcrypt.compareSync(password, cred.password_hash);
-  if (!ok) {
-    return res.status(401).json({ error: 'Invalid email or password' });
-  }
-
-  db.prepare(
-    `UPDATE auth_credentials SET last_login_at = datetime('now'), updated_at = datetime('now')
-     WHERE id = ?`
-  ).run(cred.id);
-
-  const token = signToken({ ownerType: owner.ownerType, ownerId: owner.id });
-
-  res.json({
-    token,
-    actor: {
-      id: owner.id,
-      email: owner.email,
-      full_name: owner.full_name,
-      role: owner.ownerType
+    if (matches.length === 0) {
+      // Same response as a wrong password — don't reveal whether the email
+      // exists at all.
+      return res.status(401).json({ error: 'Invalid email or password' });
     }
-  });
+
+    if (matches.length > 1) {
+      // The same email exists as e.g. both a user and an agent. That's a
+      // data-integrity issue, not something the login route should silently
+      // guess its way through — ask the caller to disambiguate.
+      console.error(`Login: email ${email} matches multiple owner types: ${matches.map((m) => m.ownerType).join(', ')}`);
+      return res.status(409).json({
+        error: 'This email is associated with more than one account type. Specify which one to log in as.',
+        roles: matches.map((m) => m.ownerType)
+      });
+    }
+
+    const owner = matches[0];
+    const credResult = await db.query(
+      'SELECT * FROM auth_credentials WHERE owner_type = $1 AND owner_id = $2',
+      [owner.ownerType, owner.id]
+    );
+    const cred = credResult.rows[0];
+
+    if (!cred || cred.auth_provider !== 'local' || !cred.password_hash) {
+      // No credentials row at all (never set a password), or an SSO-only
+      // account trying to use password login.
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    const ok = bcrypt.compareSync(password, cred.password_hash);
+    if (!ok) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    await db.query(
+      `UPDATE auth_credentials SET last_login_at = now(), updated_at = now() WHERE id = $1`,
+      [cred.id]
+    );
+
+    const token = signToken({ ownerType: owner.ownerType, ownerId: owner.id });
+
+    res.json({
+      token,
+      actor: {
+        id: owner.id,
+        email: owner.email,
+        full_name: owner.full_name,
+        role: owner.ownerType
+      }
+    });
+  } catch (err) {
+    console.error('POST /api/auth/login error:', err);
+    res.status(500).json({ error: 'failed to log in' });
+  }
 });
 
 module.exports = router;

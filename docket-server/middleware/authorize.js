@@ -1,7 +1,8 @@
 const db = require('../db/connection');
 
-function getTicket(ticketId) {
-  return db.prepare('SELECT * FROM tickets WHERE id = ?').get(ticketId);
+async function getTicket(ticketId) {
+  const result = await db.query('SELECT * FROM tickets WHERE id = $1', [ticketId]);
+  return result.rows[0] || null;
 }
 
 // Pure authorization check, no request/response involved — lets callers
@@ -26,7 +27,7 @@ function canAccessTicket(actor, ticket, options = {}) {
 // req.actor. Fetches the ticket once and stashes it on req.ticket so
 // downstream handlers don't need to re-query it.
 function requireTicketAccess(options = {}) {
-  return (req, res, next) => {
+  return async (req, res, next) => {
     const actor = req.actor;
 
     if (!actor) {
@@ -34,7 +35,16 @@ function requireTicketAccess(options = {}) {
     }
 
     const ticketId = req.params.ticketId || req.params.id;
-    const ticket = getTicket(ticketId);
+    let ticket;
+    try {
+      ticket = await getTicket(ticketId);
+    } catch (err) {
+      // An async Express middleware that throws becomes an unhandled
+      // rejection (Node terminates the process on those) instead of a
+      // normal error response — catch and 500 like any other DB failure.
+      console.error('requireTicketAccess: failed to load ticket', err);
+      return res.status(500).json({ error: 'failed to load ticket' });
+    }
 
     if (!ticket) {
       return res.status(404).json({ error: 'ticket not found' });

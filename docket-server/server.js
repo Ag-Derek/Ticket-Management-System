@@ -36,15 +36,28 @@ app.get('/', (req, res) => {
   res.json({ status: 'ok', message: 'Docket API is running' });
 });
 
-// Health check — confirms the server is up and the DB file is readable.
-app.get('/api/health', (req, res) => {
-  const counts = {
-    users: db.prepare('SELECT COUNT(*) AS n FROM users').get().n,
-    agents: db.prepare('SELECT COUNT(*) AS n FROM agents').get().n,
-    admins: db.prepare('SELECT COUNT(*) AS n FROM admins').get().n,
-    tickets: db.prepare('SELECT COUNT(*) AS n FROM tickets').get().n
-  };
-  res.json({ status: 'ok', counts });
+// Health check — confirms the server is up and the database is reachable.
+app.get('/api/health', async (req, res) => {
+  try {
+    const [users, agents, admins, tickets] = await Promise.all([
+      db.query('SELECT COUNT(*) AS n FROM users'),
+      db.query('SELECT COUNT(*) AS n FROM agents'),
+      db.query('SELECT COUNT(*) AS n FROM admins'),
+      db.query('SELECT COUNT(*) AS n FROM tickets')
+    ]);
+    res.json({
+      status: 'ok',
+      counts: {
+        users: Number(users.rows[0].n),
+        agents: Number(agents.rows[0].n),
+        admins: Number(admins.rows[0].n),
+        tickets: Number(tickets.rows[0].n)
+      }
+    });
+  } catch (err) {
+    console.error('GET /api/health error:', err);
+    res.status(500).json({ status: 'error', error: 'database unreachable' });
+  }
 });
 
 app.use('/api/users', require('./routes/users'));
@@ -57,10 +70,26 @@ app.use('/api/tickets/:ticketId/comments', require('./routes/comments'));
 app.use('/api/attachments', require('./middleware/attachments'));
 app.use('/api/backup', require('./routes/backup'));
 
+// Catch-all: anything forwarded via next(err) — including every rejected
+// promise from an asyncHandler-wrapped route — lands here instead of
+// crashing the process or falling through to Express's default HTML error
+// page. Must be registered after every other app.use()/route.
+app.use((err, req, res, next) => {
+  console.error('Unhandled request error:', err);
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: 'internal server error' });
+});
+
 const PORT = process.env.PORT || 4000;
 
-seed();
+async function start() {
+  await seed();
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Docket API listening on http://localhost:${PORT}`);
+  });
+}
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Docket API listening on http://localhost:${PORT}`);
+start().catch((err) => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
 });

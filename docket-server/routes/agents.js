@@ -9,15 +9,26 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const VALID_CREATED_BY = ['seed', 'self-signup', 'admin'];
 
 // GET /api/agents
-router.get('/', (req, res) => {
-  res.json(db.prepare('SELECT * FROM agents ORDER BY full_name ASC').all());
+router.get('/', async (req, res) => {
+  try {
+    const result = await db.query('SELECT * FROM agents ORDER BY full_name ASC');
+    res.json(result.rows);
+  } catch (err) {
+    console.error('GET /api/agents error:', err);
+    res.status(500).json({ error: 'failed to load agents' });
+  }
 });
 
 // GET /api/agents/:id
-router.get('/:id', (req, res) => {
-  const agent = db.prepare('SELECT * FROM agents WHERE id = ?').get(req.params.id);
-  if (!agent) return res.status(404).json({ error: 'not found' });
-  res.json(agent);
+router.get('/:id', async (req, res) => {
+  try {
+    const result = await db.query('SELECT * FROM agents WHERE id = $1', [req.params.id]);
+    if (!result.rows[0]) return res.status(404).json({ error: 'not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('GET /api/agents/:id error:', err);
+    res.status(500).json({ error: 'failed to load agent' });
+  }
 });
 
 // POST /api/agents
@@ -28,12 +39,12 @@ router.get('/:id', (req, res) => {
 //  2. Admin "add an agent" (admin-dashboard.html) — created_by: 'admin',
 //     and a duplicate email is a hard error there (the admin form checks
 //     first), not a silent return-existing like sign-in does.
+//
 // Same "no real credential, email is the whole identity" trust level as
-// before — self-signup never had a password to check (see app.js's
-// comment on loginOrCreateAgentByEmail). A session token is now minted
-// on the way out so the client actually has something to send on its
-// later requireAuth()-protected calls, instead of nothing at all.
-router.post('/', (req, res) => {
+// before — self-signup never had a password to check. A session token is
+// minted on the way out so the client has something to send on its later
+// requireAuth()-protected calls.
+router.post('/', async (req, res) => {
   const { full_name, email, created_by } = req.body || {};
   const createdBy = VALID_CREATED_BY.includes(created_by) ? created_by : 'self-signup';
 
@@ -45,34 +56,47 @@ router.post('/', (req, res) => {
   }
 
   const normalizedEmail = email.trim().toLowerCase();
-  const existing = db.prepare('SELECT * FROM agents WHERE email = ?').get(normalizedEmail);
 
-  if (existing) {
-    if (createdBy === 'admin') {
-      return res.status(409).json({ error: 'an agent with this email already exists' });
+  try {
+    const existingResult = await db.query('SELECT * FROM agents WHERE email = $1', [normalizedEmail]);
+    const existing = existingResult.rows[0];
+
+    if (existing) {
+      if (createdBy === 'admin') {
+        return res.status(409).json({ error: 'an agent with this email already exists' });
+      }
+      const token = signToken({ ownerType: 'agent', ownerId: existing.id });
+      return res.status(200).json({ ...existing, returning: true, token });
     }
-    const token = signToken({ ownerType: 'agent', ownerId: existing.id });
-    return res.status(200).json({ ...existing, returning: true, token });
+
+    const id = await nextId(db, 'agents', 'AGT');
+    const insertResult = await db.query(
+      'INSERT INTO agents (id, full_name, email, created_by) VALUES ($1, $2, $3, $4) RETURNING *',
+      [id, full_name.trim(), normalizedEmail, createdBy]
+    );
+    const token = signToken({ ownerType: 'agent', ownerId: id });
+    res.status(201).json({ ...insertResult.rows[0], returning: false, token });
+  } catch (err) {
+    console.error('POST /api/agents error:', err);
+    res.status(500).json({ error: 'failed to save agent' });
   }
-
-  const id = nextId(db, 'agents', 'AGT');
-  db.prepare('INSERT INTO agents (id, full_name, email, created_by) VALUES (?, ?, ?, ?)')
-    .run(id, full_name.trim(), normalizedEmail, createdBy);
-
-  const created = db.prepare('SELECT * FROM agents WHERE id = ?').get(id);
-  const token = signToken({ ownerType: 'agent', ownerId: id });
-  res.status(201).json({ ...created, returning: false, token });
 });
 
 // GET /api/agents/:id/tickets — tickets currently assigned to this agent
-router.get('/:id/tickets', (req, res) => {
-  const agent = db.prepare('SELECT id FROM agents WHERE id = ?').get(req.params.id);
-  if (!agent) return res.status(404).json({ error: 'not found' });
+router.get('/:id/tickets', async (req, res) => {
+  try {
+    const agentResult = await db.query('SELECT id FROM agents WHERE id = $1', [req.params.id]);
+    if (!agentResult.rows[0]) return res.status(404).json({ error: 'not found' });
 
-  const tickets = db
-    .prepare('SELECT * FROM tickets WHERE assigned_agent_id = ? ORDER BY created_at DESC')
-    .all(req.params.id);
-  res.json(tickets);
+    const ticketsResult = await db.query(
+      'SELECT * FROM tickets WHERE assigned_agent_id = $1 ORDER BY created_at DESC',
+      [req.params.id]
+    );
+    res.json(ticketsResult.rows);
+  } catch (err) {
+    console.error('GET /api/agents/:id/tickets error:', err);
+    res.status(500).json({ error: 'failed to load tickets' });
+  }
 });
 
 module.exports = router;
