@@ -1,6 +1,7 @@
 const express = require('express');
 const db = require('../db/connection');
 const { nextId } = require('../utils/ids');
+const { signToken } = require('../middleware/authenticate');
 
 const router = express.Router();
 
@@ -27,6 +28,11 @@ router.get('/:id', (req, res) => {
 //  2. Admin "add an agent" (admin-dashboard.html) — created_by: 'admin',
 //     and a duplicate email is a hard error there (the admin form checks
 //     first), not a silent return-existing like sign-in does.
+// Same "no real credential, email is the whole identity" trust level as
+// before — self-signup never had a password to check (see app.js's
+// comment on loginOrCreateAgentByEmail). A session token is now minted
+// on the way out so the client actually has something to send on its
+// later requireAuth()-protected calls, instead of nothing at all.
 router.post('/', (req, res) => {
   const { full_name, email, created_by } = req.body || {};
   const createdBy = VALID_CREATED_BY.includes(created_by) ? created_by : 'self-signup';
@@ -45,7 +51,8 @@ router.post('/', (req, res) => {
     if (createdBy === 'admin') {
       return res.status(409).json({ error: 'an agent with this email already exists' });
     }
-    return res.status(200).json({ ...existing, returning: true });
+    const token = signToken({ ownerType: 'agent', ownerId: existing.id });
+    return res.status(200).json({ ...existing, returning: true, token });
   }
 
   const id = nextId(db, 'agents', 'AGT');
@@ -53,7 +60,8 @@ router.post('/', (req, res) => {
     .run(id, full_name.trim(), normalizedEmail, createdBy);
 
   const created = db.prepare('SELECT * FROM agents WHERE id = ?').get(id);
-  res.status(201).json({ ...created, returning: false });
+  const token = signToken({ ownerType: 'agent', ownerId: id });
+  res.status(201).json({ ...created, returning: false, token });
 });
 
 // GET /api/agents/:id/tickets — tickets currently assigned to this agent

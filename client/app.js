@@ -69,6 +69,30 @@ document.addEventListener('DOMContentLoaded', function () {
     sessionStorage.removeItem(key);
   }
 
+  // ---- Auth token plumbing ----
+  // The backend's requireAuth() rejects any request with no
+  // "Authorization: Bearer <token>" header. Every actor object
+  // (docketUser/docketAgent/docketAdmin) now carries the signed session
+  // `token` the backend returns on login/signup — currentActor() finds
+  // whichever one is present (a given page only ever has one populated;
+  // it redirects to its own login otherwise) and authHeaders() turns
+  // that into a header object to merge into a fetch() call.
+  function currentActor() {
+    var agent = readSession('docketAgent');
+    if (agent && agent.token) return agent;
+    var admin = readSession('docketAdmin');
+    if (admin && admin.token) return admin;
+    var user = null;
+    try { user = JSON.parse(localStorage.getItem('docketUser')); } catch (e) { user = null; }
+    if (user && user.token) return user;
+    return null;
+  }
+
+  function authHeaders() {
+    var actor = currentActor();
+    return actor && actor.token ? { 'Authorization': 'Bearer ' + actor.token } : {};
+  }
+
   // ---- Real file uploads (phase 1D-vi) ----
   // Attachments used to be filenames-only — chosen in the browser, never
   // actually read or sent anywhere, so there was nothing to open or
@@ -108,6 +132,33 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   }
 
+  // GET /api/attachments/:id requires an Authorization header, which a
+  // plain <a href> navigation can't send — so a chip with a real id
+  // fetches the bytes itself (with the current actor's token) and hands
+  // the browser a local blob: URL to save, instead of linking straight
+  // at the API.
+  function downloadAttachment(id, filename) {
+    fetch(API_BASE + '/api/attachments/' + encodeURIComponent(id), { headers: authHeaders() })
+      .then(function (response) {
+        if (!response.ok) throw new Error('Unable to download this file.');
+        return response.blob();
+      })
+      .then(function (blob) {
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = filename || 'download';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+      })
+      .catch(function (err) {
+        console.error('Attachment download error:', err);
+        alert(err.message || 'Unable to download this file.');
+      });
+  }
+
   // Renders a row of "📎 filename" chips for the attachments a ticket/comment
   // carries. Each entry is either a real attachment ({ id, filename }, once
   // it has an id it can be downloaded from GET /api/attachments/:id) or —
@@ -124,9 +175,11 @@ document.addEventListener('DOMContentLoaded', function () {
       var chip = id != null ? document.createElement('a') : document.createElement('span');
       chip.className = 'chat-attachment-chip';
       if (id != null) {
-        chip.href = API_BASE + '/api/attachments/' + encodeURIComponent(id);
-        chip.target = '_blank';
-        chip.rel = 'noopener';
+        chip.href = '#';
+        chip.addEventListener('click', function (e) {
+          e.preventDefault();
+          downloadAttachment(id, name);
+        });
       }
       chip.textContent = '📎 ' + name;
       container.appendChild(chip);
@@ -242,7 +295,8 @@ document.addEventListener('DOMContentLoaded', function () {
             email: data.email,
             phone: data.phone,
             department: data.department,
-            organization: data.organization
+            organization: data.organization,
+            token: data.token
           };
           document.getElementById('f-email').classList.remove('invalid');
           showProfileStub(newUser, data.returning === true);
@@ -365,7 +419,7 @@ document.addEventListener('DOMContentLoaded', function () {
   function assignTicket(ticketId, agentId, onDone, onError) {
     fetch(API_BASE + '/api/tickets/' + encodeURIComponent(ticketId) + '/assign', {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
       body: JSON.stringify({ assigned_agent_id: agentId || null })
     })
       .then(function (response) {
@@ -390,7 +444,7 @@ document.addEventListener('DOMContentLoaded', function () {
   function changeTicketStatus(ticketId, body, onDone, onError) {
     fetch(API_BASE + '/api/tickets/' + encodeURIComponent(ticketId) + '/status', {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
       body: JSON.stringify(body)
     })
       .then(function (response) {
@@ -412,7 +466,7 @@ document.addEventListener('DOMContentLoaded', function () {
   function submitCsat(ticketId, rating, comment, onDone, onError) {
     fetch(API_BASE + '/api/tickets/' + encodeURIComponent(ticketId) + '/csat', {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
       body: JSON.stringify({ csat_rating: rating, csat_comment: comment || null })
     })
       .then(function (response) {
@@ -471,7 +525,7 @@ document.addEventListener('DOMContentLoaded', function () {
   // the chat thread itself filters internal notes out for the customer role,
   // same as before.
   function fetchComments(ticketId, onDone, onError) {
-    fetch(API_BASE + '/api/tickets/' + encodeURIComponent(ticketId) + '/comments')
+    fetch(API_BASE + '/api/tickets/' + encodeURIComponent(ticketId) + '/comments', { headers: authHeaders() })
       .then(function (response) {
         if (!response.ok) throw new Error('Unable to load messages.');
         return response.json();
@@ -489,7 +543,7 @@ document.addEventListener('DOMContentLoaded', function () {
   function postComment(ticketId, authorType, authorName, text, visibility, files, onDone, onError) {
     fetch(API_BASE + '/api/tickets/' + encodeURIComponent(ticketId) + '/comments', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
       body: JSON.stringify({
         author_type: authorType,
         author_name: authorName,
@@ -562,7 +616,7 @@ document.addEventListener('DOMContentLoaded', function () {
       });
       if (parts.length) qs = '?' + parts.join('&');
     }
-    fetch(API_BASE + '/api/tickets' + qs)
+    fetch(API_BASE + '/api/tickets' + qs, { headers: authHeaders() })
       .then(function (response) {
         if (!response.ok) throw new Error('Unable to load tickets.');
         return response.json();
@@ -611,7 +665,9 @@ document.addEventListener('DOMContentLoaded', function () {
         });
       })
       .then(function (data) {
-        onDone(normalizeAgent(data));
+        var agent = normalizeAgent(data);
+        agent.token = data.token;
+        onDone(agent);
       })
       .catch(onError);
   }
@@ -665,7 +721,8 @@ document.addEventListener('DOMContentLoaded', function () {
         saveSession('docketAgent', {
           id: record.id,
           name: record.name,
-          email: record.email
+          email: record.email,
+          token: record.token
         }, document.getElementById('keepSignedIn').checked);
       }, function (err) {
         console.error('Agent sign-in error:', err);
@@ -710,10 +767,10 @@ document.addEventListener('DOMContentLoaded', function () {
       // actually verifies (agents.js has no password at all; see Phase 1B).
       // Same generic "incorrect email or password" message either way, since
       // the server itself doesn't say which one was wrong.
-      fetch(API_BASE + '/api/admins/login', {
+      fetch(API_BASE + '/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.value.trim(), password: password.value })
+        body: JSON.stringify({ email: email.value.trim(), password: password.value, role: 'admin' })
       })
         .then(function (response) {
           return response.json().then(function (data) {
@@ -722,7 +779,7 @@ document.addEventListener('DOMContentLoaded', function () {
           });
         })
         .then(function (data) {
-          var admin = { id: data.id, name: data.full_name, email: data.email };
+          var admin = { id: data.actor.id, name: data.actor.full_name, email: data.actor.email, token: data.token };
 
           document.getElementById('adminStubId').textContent = admin.id;
           document.getElementById('adminStubName').textContent = ', ' + admin.name.split(' ')[0];
@@ -732,7 +789,8 @@ document.addEventListener('DOMContentLoaded', function () {
           saveSession('docketAdmin', {
             id: admin.id,
             name: admin.name,
-            email: admin.email
+            email: admin.email,
+            token: admin.token
           }, document.getElementById('adminKeepSignedIn').checked);
         })
         .catch(function (err) {
@@ -857,7 +915,7 @@ document.addEventListener('DOMContentLoaded', function () {
         .then(function (attachments) {
           return fetch(API_BASE + '/api/tickets', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
             body: JSON.stringify({
               user_id: user ? user.id : null,
               subject: subject.value.trim(),
@@ -2148,12 +2206,16 @@ document.addEventListener('DOMContentLoaded', function () {
           : (mine ? 'You' : chatEscapeHtml(m.name));
         var filesHtml = '';
         if (m.files && m.files.length) {
+          // GET /api/attachments/:id requires an Authorization header, which
+          // a plain href can't send — chips carry the id as a data attribute
+          // instead, and get a click handler wired up below that fetches the
+          // file with the current actor's token (see downloadAttachment()).
           filesHtml = '<div class="chat-attachments">' + m.files.map(function (f) {
             var isObj = f && typeof f === 'object';
             var name = isObj ? f.filename : f;
-            var href = isObj && f.id != null ? API_BASE + '/api/attachments/' + encodeURIComponent(f.id) : null;
-            return href
-              ? '<a class="chat-attachment-chip" href="' + href + '" target="_blank" rel="noopener">📎 ' + chatEscapeHtml(name) + '</a>'
+            var id = isObj ? f.id : null;
+            return id != null
+              ? '<a class="chat-attachment-chip" href="#" data-attachment-id="' + id + '">📎 ' + chatEscapeHtml(name) + '</a>'
               : '<span class="chat-attachment-chip">📎 ' + chatEscapeHtml(name) + '</span>';
           }).join('') + '</div>';
         }
@@ -2162,6 +2224,14 @@ document.addEventListener('DOMContentLoaded', function () {
           (m.text ? chatEscapeHtml(m.text) : '') +
           filesHtml +
           '<span class="chat-time">' + m.time + '</span>';
+        var downloadableFiles = m.files.filter(function (f) { return f && typeof f === 'object' && f.id != null; });
+        bubble.querySelectorAll('.chat-attachment-chip[data-attachment-id]').forEach(function (chip, i) {
+          var f = downloadableFiles[i];
+          chip.addEventListener('click', function (e) {
+            e.preventDefault();
+            downloadAttachment(chip.getAttribute('data-attachment-id'), f && f.filename);
+          });
+        });
         chatThread.appendChild(bubble);
       });
       chatThread.scrollTop = chatThread.scrollHeight;
@@ -2223,7 +2293,7 @@ document.addEventListener('DOMContentLoaded', function () {
     // GET /api/tickets/:id — a 404 (or a bad ?ticket= param) falls through to
     // initChat's existing "not found" branch, which disables the composer.
     // Comments are only fetched once the ticket itself is confirmed to exist.
-    fetch(API_BASE + '/api/tickets/' + encodeURIComponent(chatTicketId))
+    fetch(API_BASE + '/api/tickets/' + encodeURIComponent(chatTicketId), { headers: authHeaders() })
       .then(function (response) { return response.ok ? response.json() : null; })
       .then(function (row) {
         if (!row) { initChat(); return; }
