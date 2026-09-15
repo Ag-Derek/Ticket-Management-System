@@ -7,7 +7,28 @@ const { seed } = require('./db/seed');
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+// Attachments travel as base64 inline in the JSON body (see
+// attachment-storage.js's 5MB-per-file cap) — base64 inflates that by
+// ~33%, and a ticket/comment can carry more than one file, so the
+// default 100kb express.json() limit rejects any real attachment with a
+// 413 long before the app's own size check ever runs.
+app.use(express.json({ limit: '10mb' }));
+
+// A body-parser failure (oversized payload, malformed JSON) would
+// otherwise fall through to Express's default HTML error page — the
+// frontend's response.json() then throws a confusing
+// "unexpected character at line 1 column 1" instead of showing the
+// actual problem. Reply in the same { error } shape every route already
+// uses so the client can surface a real message.
+app.use((err, req, res, next) => {
+  if (err && err.type === 'entity.too.large') {
+    return res.status(413).json({ error: 'Request too large — attachments are capped at 5MB each.' });
+  }
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    return res.status(400).json({ error: 'Malformed request body.' });
+  }
+  next(err);
+});
 
 // Root route — just so opening the bare Render URL in a browser doesn't
 // look like the server is down. The frontend never calls this directly.
