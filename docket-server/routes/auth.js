@@ -13,6 +13,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const db = require('../db/connection');
 const { signToken } = require('../middleware/authenticate');
+const { recordAuditLog } = require('../utils/audit');
 
 const router = express.Router();
 
@@ -49,6 +50,11 @@ router.post('/login', async (req, res) => {
     const matches = await findOwnerByEmail(email, role);
 
     if (matches.length === 0) {
+      recordAuditLog({
+        actorType: role || 'unknown',
+        action: 'auth.login_failed',
+        details: { email, reason: 'no such account' }
+      });
       // Same response as a wrong password — don't reveal whether the email
       // exists at all.
       return res.status(401).json({ error: 'Invalid email or password' });
@@ -73,6 +79,13 @@ router.post('/login', async (req, res) => {
     const cred = credResult.rows[0];
 
     if (!cred || cred.auth_provider !== 'local' || !cred.password_hash) {
+      recordAuditLog({
+        actorType: owner.ownerType,
+        actorId: owner.id,
+        actorName: owner.full_name,
+        action: 'auth.login_failed',
+        details: { email, reason: 'no local credentials' }
+      });
       // No credentials row at all (never set a password), or an SSO-only
       // account trying to use password login.
       return res.status(401).json({ error: 'Invalid email or password' });
@@ -80,6 +93,13 @@ router.post('/login', async (req, res) => {
 
     const ok = bcrypt.compareSync(password, cred.password_hash);
     if (!ok) {
+      recordAuditLog({
+        actorType: owner.ownerType,
+        actorId: owner.id,
+        actorName: owner.full_name,
+        action: 'auth.login_failed',
+        details: { email, reason: 'wrong password' }
+      });
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
@@ -89,6 +109,14 @@ router.post('/login', async (req, res) => {
     );
 
     const token = signToken({ ownerType: owner.ownerType, ownerId: owner.id });
+
+    recordAuditLog({
+      actorType: owner.ownerType,
+      actorId: owner.id,
+      actorName: owner.full_name,
+      action: 'auth.login_success',
+      details: { email }
+    });
 
     res.json({
       token,

@@ -5,6 +5,7 @@ const { saveAttachmentFile } = require('../utils/attachment-storage');
 const { requireAuth } = require('../middleware/authenticate');
 const { requireTicketAccess } = require('../middleware/authorize');
 const { asyncHandler } = require('../utils/async-handler');
+const { recordAuditLog, resolveActorName } = require('../utils/audit');
 
 const router = express.Router();
 
@@ -186,6 +187,16 @@ router.post('/', requireAuth(['user', 'admin']), asyncHandler(async (req, res) =
     return res.status(500).json({ error: 'failed to create ticket' });
   }
 
+  recordAuditLog({
+    actorType: req.actor.role,
+    actorId: req.actor.id,
+    actorName: await resolveActorName(req.actor),
+    action: 'ticket.created',
+    entityType: 'ticket',
+    entityId: id,
+    details: { subject: subject.trim(), category, priority }
+  });
+
   res.status(201).json(await ticketWithComments(id));
 }));
 
@@ -282,6 +293,16 @@ router.patch('/:id/assign', requireAuth(['admin']), asyncHandler(async (req, res
     return res.status(500).json({ error: 'failed to update assignment' });
   }
 
+  recordAuditLog({
+    actorType: req.actor.role,
+    actorId: req.actor.id,
+    actorName: await resolveActorName(req.actor),
+    action: assignedAgentId ? 'ticket.assigned' : 'ticket.unassigned',
+    entityType: 'ticket',
+    entityId: req.params.id,
+    details: { from_agent_id: ticket.assigned_agent_id, to_agent_id: assignedAgentId, status: newStatus }
+  });
+
   res.json(await ticketWithComments(req.params.id));
 }));
 
@@ -342,6 +363,22 @@ router.patch(
       return res.status(500).json({ error: 'failed to update status' });
     }
 
+    recordAuditLog({
+      actorType: req.actor.role,
+      actorId: req.actor.id,
+      actorName: await resolveActorName(req.actor),
+      action: 'ticket.status_changed',
+      entityType: 'ticket',
+      entityId: req.params.id,
+      details: {
+        from_status: ticket.status,
+        to_status: status,
+        resolution_summary: resolution_summary || undefined,
+        escalated_to: escalated_to || undefined,
+        escalation_reason: escalation_reason || undefined
+      }
+    });
+
     res.json(await ticketWithComments(req.params.id));
   })
 );
@@ -379,6 +416,16 @@ router.patch(
       console.error('PATCH /:id/csat error:', err);
       return res.status(500).json({ error: 'failed to submit feedback' });
     }
+
+    recordAuditLog({
+      actorType: req.actor.role,
+      actorId: req.actor.id,
+      actorName: await resolveActorName(req.actor),
+      action: 'ticket.csat_submitted',
+      entityType: 'ticket',
+      entityId: req.params.id,
+      details: { rating, comment: comment || undefined }
+    });
 
     res.json(await ticketWithComments(req.params.id));
   })

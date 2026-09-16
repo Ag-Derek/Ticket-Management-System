@@ -118,6 +118,25 @@ CREATE TABLE IF NOT EXISTS ticket_attachments (
   )
 );
 
+-- Records who did what, when, across the app — used to back the admin
+-- console's Audit Logs / Reports screens (QA needs a trail of ticket
+-- status/assignment changes and logins, not just the tickets table's
+-- silently-overwritten current state). actor_id/actor_name are denormalized
+-- (not a strict FK into users/agents/admins) because the actor can be
+-- unauthenticated (a failed login attempt) or from a table-less concept
+-- (e.g. self-signup before an agent row exists yet).
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id            INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  actor_type    TEXT,                  -- user | agent | admin | unknown
+  actor_id      TEXT,
+  actor_name    TEXT,
+  action        TEXT NOT NULL,         -- e.g. ticket.created, ticket.status_changed, auth.login_failed
+  entity_type   TEXT,                  -- ticket | agent | user | admin
+  entity_id     TEXT,
+  details       JSONB,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE INDEX IF NOT EXISTS idx_tickets_user ON tickets(user_id);
 CREATE INDEX IF NOT EXISTS idx_tickets_agent ON tickets(assigned_agent_id);
 CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);
@@ -125,3 +144,6 @@ CREATE INDEX IF NOT EXISTS idx_comments_ticket ON ticket_comments(ticket_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_ticket ON ticket_attachments(ticket_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_comment ON ticket_attachments(comment_id);
 CREATE INDEX IF NOT EXISTS idx_auth_owner ON auth_credentials(owner_type, owner_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_actor ON audit_logs(actor_type, actor_id);

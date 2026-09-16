@@ -175,6 +175,36 @@ document.addEventListener('DOMContentLoaded', function () {
       });
   }
 
+  // Same "fetch with auth header, hand the browser a blob: URL" trick as
+  // downloadAttachment, generalized for the admin console's report exports
+  // — the server names the file via Content-Disposition, but that's only
+  // reachable from JS, never from a plain <a href>, since a real download
+  // link would carry no Authorization header at all.
+  function downloadReportFile(url, fallbackFilename) {
+    return fetch(url, { headers: authHeaders() })
+      .then(function (response) {
+        if (!response.ok) {
+          return response.json().catch(function () { return {}; }).then(function (data) {
+            throw new Error(data.error || 'Unable to generate this report.');
+          });
+        }
+        var disposition = response.headers.get('Content-Disposition') || '';
+        var match = /filename="([^"]+)"/.exec(disposition);
+        var filename = match ? match[1] : fallbackFilename;
+        return response.blob().then(function (blob) { return { blob: blob, filename: filename }; });
+      })
+      .then(function (result) {
+        var objectUrl = URL.createObjectURL(result.blob);
+        var a = document.createElement('a');
+        a.href = objectUrl;
+        a.download = result.filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(function () { URL.revokeObjectURL(objectUrl); }, 1000);
+      });
+  }
+
   // Renders a row of "📎 filename" chips for the attachments a ticket/comment
   // carries. Each entry is either a real attachment ({ id, filename }, once
   // it has an id it can be downloaded from GET /api/attachments/:id) or —
@@ -2764,7 +2794,7 @@ document.addEventListener('DOMContentLoaded', function () {
       fetchTickets(null, applyRemoteAdminUpdate);
     }, 4000);
 
-    // ---- Tabs: Tickets / Agents ----
+    // ---- Tabs: Tickets / Agents / Audit Logs / Reports ----
     document.querySelectorAll('.admin-tab').forEach(function (btn) {
       btn.addEventListener('click', function () {
         document.querySelectorAll('.admin-tab').forEach(function (b) { b.classList.remove('active'); });
@@ -2772,7 +2802,11 @@ document.addEventListener('DOMContentLoaded', function () {
         var tab = btn.dataset.tab;
         document.getElementById('adminTicketsPanel').style.display = tab === 'tickets' ? '' : 'none';
         document.getElementById('adminAgentsPanel').style.display = tab === 'agents' ? '' : 'none';
+        document.getElementById('adminAuditPanel').style.display = tab === 'audit' ? '' : 'none';
+        document.getElementById('adminReportsPanel').style.display = tab === 'reports' ? '' : 'none';
         if (tab === 'agents') renderAgentDirectory();
+        if (tab === 'audit') loadAuditFacets(function () { loadAuditLogs(); });
+        if (tab === 'reports') loadReportSummary();
       });
     });
 
@@ -2873,6 +2907,232 @@ document.addEventListener('DOMContentLoaded', function () {
         .finally(function () {
           addAgentBtnEl.disabled = false;
         });
+    });
+
+    // ---- Audit Logs tab ----
+    var auditPage = 1;
+    var auditPageSize = 25;
+    var auditTotal = 0;
+    var auditFilters = { q: '', actor_type: '', action: '', from: '', to: '' };
+
+    function auditQueryString(extra) {
+      var params = Object.assign({}, auditFilters, extra || {});
+      return Object.keys(params)
+        .filter(function (k) { return params[k]; })
+        .map(function (k) { return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]); })
+        .join('&');
+    }
+
+    function humanizeAction(action) {
+      if (!action) return '—';
+      return action.replace(/[._]/g, ' ').replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+    }
+
+    function renderAuditLogList(rows) {
+      var listEl = document.getElementById('auditLogList');
+      listEl.innerHTML = '';
+      if (!rows.length) {
+        listEl.innerHTML = '<p class="queue-no-results">No audit log entries match your search or filters.</p>';
+        return;
+      }
+      rows.forEach(function (r) {
+        var row = document.createElement('div');
+        row.className = 'history-row';
+        var when = new Date(r.created_at).toLocaleString();
+        var actorLabel = (r.actor_name || r.actor_id || 'Unknown') + (r.actor_type ? ' (' + r.actor_type + ')' : '');
+        var entityLabel = r.entity_type ? (r.entity_type + (r.entity_id ? ' ' + r.entity_id : '')) : '';
+        row.innerHTML =
+          '<div class="history-main">' +
+            '<p class="history-id">' + when + '</p>' +
+            '<p class="history-subject">' + humanizeAction(r.action) + '</p>' +
+          '</div>' +
+          '<div class="history-meta">' +
+            '<span class="history-chip">' + actorLabel + '</span>' +
+            (entityLabel ? '<span class="history-chip">' + entityLabel + '</span>' : '') +
+          '</div>';
+        listEl.appendChild(row);
+      });
+    }
+
+    function loadAuditLogs() {
+      var qs = auditQueryString({ page: auditPage, page_size: auditPageSize });
+      fetch(API_BASE + '/api/audit-logs?' + qs, { headers: authHeaders() })
+        .then(function (response) {
+          if (!response.ok) {
+            if (response.status === 401 && handleAuthExpired()) return null;
+            throw new Error('failed to load audit logs');
+          }
+          return response.json();
+        })
+        .then(function (data) {
+          if (!data) return;
+          auditTotal = data.total;
+          renderAuditLogList(data.rows);
+          var maxPage = Math.max(1, Math.ceil(auditTotal / auditPageSize));
+          document.getElementById('auditPageInfo').textContent = 'Page ' + auditPage + ' of ' + maxPage + ' · ' + auditTotal + ' entries';
+          document.getElementById('auditPrevBtn').disabled = auditPage <= 1;
+          document.getElementById('auditNextBtn').disabled = auditPage >= maxPage;
+        })
+        .catch(function (err) {
+          console.error('Audit log load error:', err);
+          document.getElementById('auditLogList').innerHTML = '<p class="queue-no-results">Couldn’t load audit logs. Try again in a moment.</p>';
+        });
+    }
+
+    // Action values come from whatever's actually been logged so far,
+    // rather than a hardcoded list that'd drift as new actions get
+    // instrumented server-side.
+    function loadAuditFacets(cb) {
+      fetch(API_BASE + '/api/audit-logs/facets', { headers: authHeaders() })
+        .then(function (response) { return response.ok ? response.json() : { actions: [] }; })
+        .then(function (data) {
+          var sel = document.getElementById('auditActionFilter');
+          var current = sel.value;
+          Array.prototype.slice.call(sel.querySelectorAll('option[data-action-option]')).forEach(function (o) { o.remove(); });
+          (data.actions || []).forEach(function (a) {
+            var opt = document.createElement('option');
+            opt.value = a; opt.textContent = humanizeAction(a);
+            opt.setAttribute('data-action-option', '1');
+            sel.appendChild(opt);
+          });
+          sel.value = current;
+        })
+        .catch(function () {})
+        .then(function () { if (cb) cb(); });
+    }
+
+    document.getElementById('auditSearchInput').addEventListener('input', function (e) {
+      auditFilters.q = e.target.value; auditPage = 1; loadAuditLogs();
+    });
+    document.getElementById('auditActorFilter').addEventListener('change', function (e) {
+      auditFilters.actor_type = e.target.value; auditPage = 1; loadAuditLogs();
+    });
+    document.getElementById('auditActionFilter').addEventListener('change', function (e) {
+      auditFilters.action = e.target.value; auditPage = 1; loadAuditLogs();
+    });
+    document.getElementById('auditFromInput').addEventListener('change', function (e) {
+      auditFilters.from = e.target.value; auditPage = 1; loadAuditLogs();
+    });
+    document.getElementById('auditToInput').addEventListener('change', function (e) {
+      auditFilters.to = e.target.value; auditPage = 1; loadAuditLogs();
+    });
+    document.getElementById('auditClearFilters').addEventListener('click', function () {
+      auditFilters = { q: '', actor_type: '', action: '', from: '', to: '' };
+      document.getElementById('auditSearchInput').value = '';
+      document.getElementById('auditActorFilter').value = '';
+      document.getElementById('auditActionFilter').value = '';
+      document.getElementById('auditFromInput').value = '';
+      document.getElementById('auditToInput').value = '';
+      auditPage = 1;
+      loadAuditLogs();
+    });
+    document.getElementById('auditPrevBtn').addEventListener('click', function () {
+      if (auditPage > 1) { auditPage -= 1; loadAuditLogs(); }
+    });
+    document.getElementById('auditNextBtn').addEventListener('click', function () {
+      auditPage += 1; loadAuditLogs();
+    });
+
+    document.getElementById('auditExportBtn').addEventListener('click', function () {
+      var btn = document.getElementById('auditExportBtn');
+      var format = document.getElementById('auditExportFormat').value;
+      var qs = auditQueryString({ type: 'audit-logs', format: format });
+      btn.disabled = true;
+      downloadReportFile(API_BASE + '/api/reports/export?' + qs, 'audit-logs-report.' + format)
+        .catch(function (err) { alert(err.message || 'Unable to generate this report.'); })
+        .finally(function () { btn.disabled = false; });
+    });
+
+    // ---- Reports tab ----
+    function fmtHours(h) {
+      if (h === null || h === undefined) return '—';
+      if (h < 1) return Math.round(h * 60) + ' min';
+      return h.toFixed(1) + ' hrs';
+    }
+
+    function renderBreakdownList(elId, rows, labelKey) {
+      var listEl = document.getElementById(elId);
+      listEl.innerHTML = '';
+      if (!rows.length) {
+        listEl.innerHTML = '<p class="queue-no-results">No data for this range.</p>';
+        return;
+      }
+      rows.forEach(function (r) {
+        var row = document.createElement('div');
+        row.className = 'history-row';
+        row.innerHTML =
+          '<div class="history-main"><p class="history-subject">' + r[labelKey] + '</p></div>' +
+          '<div class="history-meta"><span class="history-chip">' + r.count + '</span></div>';
+        listEl.appendChild(row);
+      });
+    }
+
+    function renderAgentWorkload(rows) {
+      var listEl = document.getElementById('reportByAgent');
+      listEl.innerHTML = '';
+      if (!rows.length) {
+        listEl.innerHTML = '<p class="queue-no-results">No agents yet.</p>';
+        return;
+      }
+      rows.forEach(function (r) {
+        var row = document.createElement('div');
+        row.className = 'history-row';
+        row.innerHTML =
+          '<div class="history-main"><p class="history-subject">' + r.agent_name + '</p></div>' +
+          '<div class="history-meta">' +
+            '<span class="history-chip">' + r.open_count + ' open</span>' +
+            '<span class="history-chip">' + r.resolved_count + ' resolved</span>' +
+          '</div>';
+        listEl.appendChild(row);
+      });
+    }
+
+    function loadReportSummary() {
+      var from = document.getElementById('reportFromInput').value;
+      var to = document.getElementById('reportToInput').value;
+      var params = [];
+      if (from) params.push('from=' + encodeURIComponent(from));
+      if (to) params.push('to=' + encodeURIComponent(to));
+      fetch(API_BASE + '/api/reports/summary' + (params.length ? '?' + params.join('&') : ''), { headers: authHeaders() })
+        .then(function (response) {
+          if (!response.ok) {
+            if (response.status === 401 && handleAuthExpired()) return null;
+            throw new Error('failed to load report summary');
+          }
+          return response.json();
+        })
+        .then(function (data) {
+          if (!data) return;
+          document.getElementById('reportStatTotal').textContent = data.total;
+          document.getElementById('reportStatResolution').textContent = fmtHours(data.avg_resolution_hours);
+          document.getElementById('reportStatCsat').textContent = data.csat.average !== null ? data.csat.average + ' / 5' : '—';
+          document.getElementById('reportStatCsatCount').textContent = data.csat.responses;
+          renderBreakdownList('reportByStatus', data.by_status, 'status');
+          renderBreakdownList('reportByCategory', data.by_category, 'category');
+          renderBreakdownList('reportByPriority', data.by_priority, 'priority');
+          renderAgentWorkload(data.by_agent);
+        })
+        .catch(function (err) {
+          console.error('Report summary load error:', err);
+        });
+    }
+
+    document.getElementById('reportRefreshBtn').addEventListener('click', loadReportSummary);
+
+    document.getElementById('reportExportBtn').addEventListener('click', function () {
+      var btn = document.getElementById('reportExportBtn');
+      var format = document.getElementById('reportExportFormat').value;
+      var status = document.getElementById('reportExportStatus').value;
+      var from = document.getElementById('reportFromInput').value;
+      var to = document.getElementById('reportToInput').value;
+      var params = ['type=tickets', 'format=' + format];
+      if (status) params.push('status=' + encodeURIComponent(status));
+      if (from) params.push('from=' + encodeURIComponent(from));
+      if (to) params.push('to=' + encodeURIComponent(to));
+      btn.disabled = true;
+      downloadReportFile(API_BASE + '/api/reports/export?' + params.join('&'), 'tickets-report.' + format)
+        .catch(function (err) { alert(err.message || 'Unable to generate this report.'); })
+        .finally(function () { btn.disabled = false; });
     });
   }
 

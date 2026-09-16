@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../db/connection');
 const { nextId } = require('../utils/ids');
 const { signToken } = require('../middleware/authenticate');
+const { recordAuditLog } = require('../utils/audit');
 
 const router = express.Router();
 
@@ -75,6 +76,16 @@ router.post('/', async (req, res) => {
       [id, full_name.trim(), normalizedEmail, createdBy]
     );
     const token = signToken({ ownerType: 'agent', ownerId: id });
+
+    recordAuditLog({
+      actorType: createdBy === 'admin' ? 'admin' : 'agent',
+      actorName: createdBy === 'admin' ? 'Admin console' : full_name.trim(),
+      action: 'agent.created',
+      entityType: 'agent',
+      entityId: id,
+      details: { email: normalizedEmail, created_by: createdBy }
+    });
+
     res.status(201).json({ ...insertResult.rows[0], returning: false, token });
   } catch (err) {
     console.error('POST /api/agents error:', err);
