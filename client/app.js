@@ -219,6 +219,9 @@ document.addEventListener('DOMContentLoaded', function () {
       document.getElementById('stub').classList.add('show');
       var notYouLink = document.getElementById('notYouLink');
       notYouLink.style.display = isReturning ? 'block' : 'none';
+      var stubCta = document.getElementById('stubCta');
+      stubCta.href = 'portal.html';
+      stubCta.textContent = 'Go to my portal →';
     }
 
     var existingUser = null;
@@ -418,6 +421,8 @@ document.addEventListener('DOMContentLoaded', function () {
       status: row.status,
       assignedAgentId: row.assigned_agent_id || null,
       assignedAgent: agentNameForId(row.assigned_agent_id),
+      suggestedAgentId: row.suggested_agent_id || null,
+      suggestedAgent: agentNameForId(row.suggested_agent_id),
       createdAt: row.created_at,
       // `by` is blank because the API records what was written, not who wrote
       // it; the render sites below omit the attribution when it's empty.
@@ -1608,6 +1613,7 @@ document.addEventListener('DOMContentLoaded', function () {
     var reassignNote = document.getElementById('reassignNote');
     var escalatePanel = document.getElementById('escalatePanel');
     var escalateSelect = document.getElementById('escalateSelect');
+    var escalateSuggestSelect = document.getElementById('escalateSuggestSelect');
     var escalateReason = document.getElementById('escalateReason');
     var resolvePanel = document.getElementById('resolvePanel');
     var resolveSummaryField = document.getElementById('f-resolveSummary');
@@ -1652,6 +1658,22 @@ document.addEventListener('DOMContentLoaded', function () {
         opt.value = name; opt.textContent = name;
         escalateSelect.appendChild(opt);
       });
+      // Optional: an agent can't assign/reassign directly (PATCH /:id/assign
+      // stays admin-only), but they can recommend who should pick this up —
+      // the admin console pre-fills its reassign dropdown from this instead
+      // of showing a blank one.
+      if (escalateSuggestSelect) {
+        escalateSuggestSelect.innerHTML = '';
+        var noSuggestionOpt = document.createElement('option');
+        noSuggestionOpt.value = '';
+        noSuggestionOpt.textContent = 'No suggestion';
+        escalateSuggestSelect.appendChild(noSuggestionOpt);
+        loadAgents().filter(function (a) { return a.id !== agent.id; }).forEach(function (a) {
+          var opt = document.createElement('option');
+          opt.value = a.id; opt.textContent = a.name;
+          escalateSuggestSelect.appendChild(opt);
+        });
+      }
       escalateReason.value = '';
       escalatePanel.style.display = 'block';
     }
@@ -1710,17 +1732,19 @@ document.addEventListener('DOMContentLoaded', function () {
       if (!t || !isMine(t)) { closePanels(); return; }
       var to = escalateSelect.value;
       var reason = escalateReason.value.trim();
+      var suggestedId = escalateSuggestSelect ? escalateSuggestSelect.value : '';
       if (!to || !reason) return;
       if (!canTransition(t.status, 'Escalated')) { closePanels(); return; }
 
       var escalateConfirmBtnEl = document.getElementById('escalateConfirmBtn');
       clearPanelError(escalatePanel);
       escalateConfirmBtnEl.disabled = true;
-      changeTicketStatus(t.id, { status: 'Escalated', escalated_to: to, escalation_reason: reason }, function (updated) {
+      changeTicketStatus(t.id, { status: 'Escalated', escalated_to: to, escalation_reason: reason, suggested_agent_id: suggestedId || null }, function (updated) {
         escalateConfirmBtnEl.disabled = false;
         replaceTicketIn(tickets, updated);
         agentKnownSignature[updated.id] = updated.status + '|' + (updated.assignedAgent || '');
-        addInternalNote(updated.id, 'Escalated to ' + to + ' — ' + reason);
+        var suggestedName = suggestedId ? agentNameForId(suggestedId) : null;
+        addInternalNote(updated.id, 'Escalated to ' + to + ' — ' + reason + (suggestedName ? ' (suggested agent: ' + suggestedName + ')' : ''));
         closePanels();
         renderStats(); renderDetail(); renderList();
       }, function (err) {
@@ -1854,7 +1878,8 @@ document.addEventListener('DOMContentLoaded', function () {
         if (t.status === 'Escalated' && t.escalation) {
           escBanner.style.display = 'flex';
           escText.innerHTML = 'Escalated to <strong>' + t.escalation.to + '</strong>' +
-            (t.escalation.by ? ' by ' + t.escalation.by : '') + ': "' + t.escalation.reason + '"';
+            (t.escalation.by ? ' by ' + t.escalation.by : '') + ': "' + t.escalation.reason + '"' +
+            (t.suggestedAgent ? ' — suggested agent: <strong>' + t.suggestedAgent + '</strong>' : '');
         } else {
           escBanner.style.display = 'none';
         }
@@ -2457,16 +2482,20 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function openAdminAssignPanel(t) {
       adminAssignSelect.innerHTML = '';
+      // An escalating agent's suggested_agent_id (see openEscalatePanel) only
+      // pre-selects here when the ticket has no current assignee — an actual
+      // assignment always takes priority over a stale suggestion.
+      var preselectId = t.assignedAgentId || t.suggestedAgentId;
       var unassignedOpt = document.createElement('option');
       unassignedOpt.value = '';
       unassignedOpt.textContent = 'Unassigned';
-      if (!t.assignedAgentId) unassignedOpt.selected = true;
+      if (!preselectId) unassignedOpt.selected = true;
       adminAssignSelect.appendChild(unassignedOpt);
       // Option values are agent ids — what PATCH /assign takes — labelled by name.
       loadAgents().forEach(function (a) {
         var opt = document.createElement('option');
-        opt.value = a.id; opt.textContent = a.name;
-        if (a.id === t.assignedAgentId) opt.selected = true;
+        opt.value = a.id; opt.textContent = a.name + (!t.assignedAgentId && a.id === t.suggestedAgentId ? ' (suggested)' : '');
+        if (a.id === preselectId) opt.selected = true;
         adminAssignSelect.appendChild(opt);
       });
       adminAssignNote.value = '';
@@ -2556,7 +2585,8 @@ document.addEventListener('DOMContentLoaded', function () {
       if (t.status === 'Escalated' && t.escalation) {
         escBanner.style.display = 'flex';
         escText.innerHTML = 'Escalated to <strong>' + t.escalation.to + '</strong>' +
-          (t.escalation.by ? ' by ' + t.escalation.by : '') + ': "' + t.escalation.reason + '"';
+          (t.escalation.by ? ' by ' + t.escalation.by : '') + ': "' + t.escalation.reason + '"' +
+          (t.suggestedAgent ? ' — suggested agent: <strong>' + t.suggestedAgent + '</strong>' : '');
       } else {
         escBanner.style.display = 'none';
       }

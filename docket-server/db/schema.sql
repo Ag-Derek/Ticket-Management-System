@@ -70,6 +70,12 @@ CREATE TABLE IF NOT EXISTS tickets (
   assigned_team       TEXT,                  -- derived from category at creation
   sla_summary         TEXT,                  -- e.g. "15 min response / 4 hrs resolution"
   assigned_agent_id   TEXT REFERENCES agents(id),
+  -- Set when an agent escalates a ticket and recommends who should pick it
+  -- up next. Informational only — an agent still cannot assign/reassign a
+  -- ticket themselves (see PATCH /:id/assign, admin-only); this just gives
+  -- the admin console a one-click default instead of a blank dropdown.
+  -- Cleared whenever the ticket is actually (re)assigned.
+  suggested_agent_id TEXT REFERENCES agents(id),
   resolution_summary  TEXT,
   csat_rating         INTEGER,               -- 1-5, null until rated
   csat_comment        TEXT,
@@ -78,6 +84,10 @@ CREATE TABLE IF NOT EXISTS tickets (
   created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- CREATE TABLE IF NOT EXISTS is a no-op against a tickets table that
+-- already exists without this column — add it separately, idempotently.
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS suggested_agent_id TEXT REFERENCES agents(id);
 
 CREATE TABLE IF NOT EXISTS ticket_comments (
   id            INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

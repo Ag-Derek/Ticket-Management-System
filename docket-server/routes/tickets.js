@@ -270,8 +270,11 @@ router.patch('/:id/assign', requireAuth(['admin']), asyncHandler(async (req, res
   }
 
   try {
+    // Assigning (by anyone — this route is admin-only) consumes any
+    // pending suggested_agent_id an agent left behind while escalating,
+    // whether or not the admin actually went with that suggestion.
     await db.query(
-      `UPDATE tickets SET assigned_agent_id = $1, status = $2, updated_at = now() WHERE id = $3`,
+      `UPDATE tickets SET assigned_agent_id = $1, status = $2, suggested_agent_id = NULL, updated_at = now() WHERE id = $3`,
       [assignedAgentId, newStatus, req.params.id]
     );
   } catch (err) {
@@ -283,10 +286,16 @@ router.patch('/:id/assign', requireAuth(['admin']), asyncHandler(async (req, res
 }));
 
 // PATCH /api/tickets/:id/status
-// body: { status, resolution_summary?, escalated_to?, escalation_reason? }
+// body: { status, resolution_summary?, escalated_to?, escalation_reason?, suggested_agent_id? }
 // Resolving requires resolution_summary; escalating requires both
 // escalated_to and escalation_reason — same hard requirements app.js's
 // resolve/escalate panels enforce client-side.
+//
+// suggested_agent_id is optional and only meaningful on an Escalated
+// transition: an agent still can't assign/reassign a ticket themselves
+// (PATCH /:id/assign stays admin-only), but they can leave a recommendation
+// here for the admin console to pre-fill instead of showing a blank
+// reassign dropdown.
 router.patch(
   '/:id/status',
   requireAuth(),
@@ -294,7 +303,7 @@ router.patch(
   asyncHandler(async (req, res) => {
     const ticket = req.ticket;
 
-    const { status, resolution_summary, escalated_to, escalation_reason } = req.body || {};
+    const { status, resolution_summary, escalated_to, escalation_reason, suggested_agent_id } = req.body || {};
     if (!status || !canTransition(ticket.status, status)) {
       return res.status(400).json({
         error: `cannot move ticket from "${ticket.status}" to "${status}"`,
@@ -309,6 +318,13 @@ router.patch(
       return res.status(400).json({ error: 'escalated_to and escalation_reason are both required to escalate a ticket' });
     }
 
+    let suggestedAgentId = null;
+    if (status === 'Escalated' && suggested_agent_id) {
+      const agentResult = await db.query('SELECT id FROM agents WHERE id = $1', [suggested_agent_id]);
+      if (!agentResult.rows[0]) return res.status(404).json({ error: 'suggested_agent_id does not exist' });
+      suggestedAgentId = suggested_agent_id;
+    }
+
     try {
       await db.query(
         `UPDATE tickets
@@ -316,9 +332,10 @@ router.patch(
              resolution_summary = COALESCE($2, resolution_summary),
              escalated_to = COALESCE($3, escalated_to),
              escalation_reason = COALESCE($4, escalation_reason),
+             suggested_agent_id = CASE WHEN $5 = 'Escalated' THEN $6 ELSE suggested_agent_id END,
              updated_at = now()
-         WHERE id = $5`,
-        [status, resolution_summary || null, escalated_to || null, escalation_reason || null, req.params.id]
+         WHERE id = $7`,
+        [status, resolution_summary || null, escalated_to || null, escalation_reason || null, status, suggestedAgentId, req.params.id]
       );
     } catch (err) {
       console.error('PATCH /:id/status error:', err);
