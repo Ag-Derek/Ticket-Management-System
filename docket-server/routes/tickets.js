@@ -320,7 +320,12 @@ router.patch('/:id/assign', requireAuth(['admin']), asyncHandler(async (req, res
 router.patch(
   '/:id/status',
   requireAuth(),
-  requireTicketAccess({ allowAssignedAgent: true, allowAdmin: true }),
+  // allowCustomer is scoped down further below: STATUS_TRANSITIONS lets
+  // Resolved move to Closed/Reopened (the "confirm fix" / "reopen" buttons
+  // on the customer portal), but that's the *only* move a customer should
+  // ever be able to trigger through this route — every other transition
+  // stays agent/admin-only even though the graph would technically allow it.
+  requireTicketAccess({ allowCustomer: true, allowAssignedAgent: true, allowAdmin: true }),
   asyncHandler(async (req, res) => {
     const ticket = req.ticket;
 
@@ -330,6 +335,10 @@ router.patch(
         error: `cannot move ticket from "${ticket.status}" to "${status}"`,
         allowed_next_states: STATUS_TRANSITIONS[ticket.status] || []
       });
+    }
+
+    if (req.actor.role === 'user' && !(ticket.status === 'Resolved' && (status === 'Closed' || status === 'Reopened'))) {
+      return res.status(403).json({ error: 'Not authorized to make this change' });
     }
 
     if (status === 'Resolved' && (!resolution_summary || !resolution_summary.trim())) {
