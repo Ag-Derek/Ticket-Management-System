@@ -71,6 +71,7 @@ app.use('/api/attachments', require('./middleware/attachments'));
 app.use('/api/backup', require('./routes/backup'));
 app.use('/api/audit-logs', require('./routes/audit-logs'));
 app.use('/api/reports', require('./routes/reports'));
+app.use('/api/notifications', require('./routes/notifications'));
 
 // Catch-all: anything forwarded via next(err) — including every rejected
 // promise from an asyncHandler-wrapped route — lands here instead of

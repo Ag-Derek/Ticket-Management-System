@@ -6,7 +6,7 @@ const { requireAuth } = require('../middleware/authenticate');
 const { requireTicketAccess } = require('../middleware/authorize');
 const { asyncHandler } = require('../utils/async-handler');
 const { recordAuditLog, resolveActorName } = require('../utils/audit');
-const { notifyTicketCreated, notifyTicketResolved } = require('../utils/ticket-notifications');
+const { notifyTicketCreated, notifyTicketResolved, notifyTicketAssigned } = require('../utils/ticket-notifications');
 
 const router = express.Router();
 
@@ -313,6 +313,9 @@ router.patch('/:id/assign', requireAuth(['admin']), asyncHandler(async (req, res
     entityId: req.params.id,
     details: { from_agent_id: ticket.assigned_agent_id, to_agent_id: assignedAgentId, status: newStatus }
   });
+
+  // Only a real change of assignee — re-saving the same agent shouldn't re-email them.
+  if (assignedAgentId && assignedAgentId !== ticket.assigned_agent_id) notifyTicketAssigned(req.params.id);
 
   res.json(await ticketWithComments(req.params.id));
 }));

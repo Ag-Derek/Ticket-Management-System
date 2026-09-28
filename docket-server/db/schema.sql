@@ -136,6 +136,10 @@ CREATE TABLE IF NOT EXISTS ticket_comments (
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- The author's users/agents/admins id, so message notifications can skip
+-- the author's own messages. Null on comments posted before it existed.
+ALTER TABLE ticket_comments ADD COLUMN IF NOT EXISTS author_id TEXT;
+
 -- An attachment belongs to exactly one of: a ticket (attached directly,
 -- e.g. at creation) or a comment (attached to a specific reply). It can
 -- never belong to neither, and never to both — the CHECK below enforces

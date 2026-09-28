@@ -132,9 +132,9 @@ router.post('/', requireAuth(), requireTicketAccess(TICKET_ACCESS), asyncHandler
   try {
     commentId = await db.withTransaction(async (client) => {
       const insertResult = await client.query(
-        `INSERT INTO ticket_comments (ticket_id, author_type, author_name, visibility, body)
-         VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-        [req.params.ticketId, authorType, authorName, vis, (body || '').trim()]
+        `INSERT INTO ticket_comments (ticket_id, author_type, author_id, author_name, visibility, body)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+        [req.params.ticketId, authorType, req.actor.id, authorName, vis, (body || '').trim()]
       );
       const newCommentId = insertResult.rows[0].id;
 

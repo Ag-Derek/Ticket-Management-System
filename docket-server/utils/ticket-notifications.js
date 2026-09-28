@@ -1,9 +1,10 @@
-// Customer-facing ticket emails:
+// Ticket emails:
 //   - notifyTicketCreated:  confirmation right after POST /api/tickets
 //   - notifyTicketResolved: the agent marked it Resolved — the customer is
 //     asked to confirm the fix or reopen from the portal
+//   - notifyTicketAssigned: tells an agent a ticket was assigned to them
 //
-// Both are fire-and-forget: the ticket change is already committed by the
+// All are fire-and-forget: the ticket change is already committed by the
 // time they run, so a Resend outage is logged, never turned into a failed
 // request (the customer would retry and create a duplicate ticket).
 
@@ -98,6 +99,47 @@ async function sendTicketResolved(ticketId) {
   });
 }
 
+// Agent-facing: sent to whoever a ticket was just assigned to (PATCH
+// /api/tickets/:id/assign). Reads the agent off the ticket row itself, so
+// it always goes to the current assignee even if two assignments race.
+async function sendTicketAssigned(ticketId) {
+  const t = await loadTicketWithRequester(ticketId);
+  if (!t || !t.assigned_agent_id) return;
+
+  const agentResult = await db.query('SELECT full_name, email FROM agents WHERE id = $1', [t.assigned_agent_id]);
+  const agent = agentResult.rows[0];
+  if (!agent || !agent.email) return;
+
+  const rows = [
+    ['Ticket', t.id],
+    ['Subject', t.subject],
+    ['Priority', t.priority],
+    ['Category', t.category],
+    ['Requester', t.requester_email || '—'],
+    ['Target', t.sla_summary || '—']
+  ];
+  const description = t.description || '';
+  const url = appLink('agent-dashboard.html');
+
+  await sendEmail({
+    to: agent.email,
+    subject: `[${t.id}] Assigned to you (${t.priority}): ${t.subject}`,
+    text:
+      `${greetingFor(agent.full_name)}\n\n` +
+      `A ticket has been assigned to you.\n\n` +
+      rows.map(([label, value]) => `${label}: ${value}`).join('\n') +
+      `\n\nDescription:\n${description}` +
+      (url ? `\n\nOpen your agent console: ${url}` : ''),
+    html:
+      `<p>${escapeHtml(greetingFor(agent.full_name))}</p>` +
+      `<p>A ticket has been assigned to you.</p>` +
+      detailRowsHtml(rows) +
+      `<p style="color:#6B6A61;margin-bottom:4px">Description</p>` +
+      `<blockquote style="margin:0 0 16px;padding:8px 12px;border-left:3px solid #D9D6CC;white-space:pre-wrap">${escapeHtml(description)}</blockquote>` +
+      (url ? `<p><a href="${escapeHtml(url)}">Open your agent console</a></p>` : '')
+  });
+}
+
 function fireAndForget(label, fn, ticketId) {
   fn(ticketId).catch((err) => {
     console.error(`[notifications] ${label} email for ${ticketId} failed:`, err);
@@ -106,5 +148,6 @@ function fireAndForget(label, fn, ticketId) {
 
 module.exports = {
   notifyTicketCreated: (ticketId) => fireAndForget('ticket-created', sendTicketCreated, ticketId),
-  notifyTicketResolved: (ticketId) => fireAndForget('ticket-resolved', sendTicketResolved, ticketId)
+  notifyTicketResolved: (ticketId) => fireAndForget('ticket-resolved', sendTicketResolved, ticketId),
+  notifyTicketAssigned: (ticketId) => fireAndForget('ticket-assigned', sendTicketAssigned, ticketId)
 };

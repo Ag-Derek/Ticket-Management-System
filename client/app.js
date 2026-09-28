@@ -867,6 +867,154 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   }
 
+  // ---- New-message pop-ups (customer portal, agent/admin consoles, chat) ----
+  // Polls GET /api/notifications/messages for messages someone else posted
+  // on a ticket this actor can see, and shows each as a toast linking to
+  // that ticket's conversation. The cursor (last message id seen) lives in
+  // localStorage per actor, so moving between the dashboard and the chat
+  // page neither replays old messages nor drops ones that arrived in between.
+  (function startMessageNotifier() {
+    var page = window.location.pathname.split('/').pop();
+    var role = null; // 'customer' | 'agent' | 'admin' — the ticket-chat.html role values
+    if (page === 'portal.html' || page === 'ticket.html') role = 'customer';
+    else if (page === 'agent-dashboard.html') role = 'agent';
+    else if (page === 'admin-dashboard.html') role = 'admin';
+    else if (page === 'ticket-chat.html') {
+      var r = new URLSearchParams(window.location.search).get('role');
+      role = r === 'agent' || r === 'admin' ? r : 'customer';
+    }
+    if (!role) return;
+
+    // Read this page's own session rather than currentActor(), so testing
+    // several roles in one browser doesn't notify the wrong one.
+    var actor = null;
+    if (role === 'agent') actor = readSession('docketAgent');
+    else if (role === 'admin') actor = readSession('docketAdmin');
+    else { try { actor = JSON.parse(localStorage.getItem('docketUser')); } catch (e) { actor = null; } }
+    if (!actor || !actor.token) return;
+
+    // The chat page already shows new messages for its own ticket live.
+    var openChatTicket = page === 'ticket-chat.html' ? new URLSearchParams(window.location.search).get('ticket') : null;
+    var cursorKey = 'docketMsgCursor:' + role + ':' + actor.id;
+    var cursor = null;
+    try { cursor = localStorage.getItem(cursorKey); } catch (e) { cursor = null; }
+
+    var stack = document.createElement('div');
+    stack.className = 'toast-stack';
+    stack.setAttribute('aria-live', 'polite');
+    document.body.appendChild(stack);
+
+    function escapeText(str) {
+      var div = document.createElement('div');
+      div.textContent = str == null ? '' : String(str);
+      return div.innerHTML;
+    }
+
+    // ---- Browser (system) notifications ----
+    // Shown in addition to the toast whenever this tab isn't visible, so a
+    // message still gets noticed with the console in a background tab or
+    // behind another window. Browsers only allow asking for permission from
+    // a click, so an "Enable" card is offered once until it's answered or
+    // dismissed. Needs a secure context (https or localhost).
+    var canNotify = 'Notification' in window && window.isSecureContext;
+    var promptDismissedKey = 'docketNotifyPromptDismissed';
+
+    function offerBrowserNotifications() {
+      if (!canNotify || Notification.permission !== 'default') return;
+      try { if (localStorage.getItem(promptDismissedKey)) return; } catch (e) { /* show it anyway */ }
+
+      var card = document.createElement('div');
+      card.className = 'toast toast-prompt';
+      card.innerHTML =
+        '<button class="toast-close" type="button" aria-label="Dismiss">×</button>' +
+        '<p class="toast-from">Get notified about new messages?</p>' +
+        '<p class="toast-body">Turn on browser notifications to hear about new ticket messages even when this tab is in the background.</p>' +
+        '<button class="btn-amber btn-inline toast-enable" type="button">Enable notifications</button>';
+
+      function close(remember) {
+        if (remember) { try { localStorage.setItem(promptDismissedKey, '1'); } catch (e) { /* ignore */ } }
+        if (card.parentNode) card.parentNode.removeChild(card);
+      }
+      card.querySelector('.toast-close').addEventListener('click', function () { close(true); });
+      card.querySelector('.toast-enable').addEventListener('click', function () {
+        // Older Safari only supports the callback form, not the Promise.
+        var result = Notification.requestPermission(function () { close(false); });
+        if (result && result.then) result.then(function () { close(false); });
+      });
+      stack.appendChild(card);
+    }
+
+    function showBrowserNotification(m, preview, link) {
+      if (!canNotify || Notification.permission !== 'granted' || !document.hidden) return;
+      try {
+        var n = new Notification(
+          (m.visibility === 'internal' ? 'Internal note' : 'New message') + ' · ' + m.ticket_id,
+          {
+            body: m.author_name + ': ' + (preview || m.subject),
+            // Same tag in every open tab, so one message = one notification.
+            tag: 'docket-msg-' + m.id
+          }
+        );
+        n.onclick = function () { window.focus(); window.location.href = link; n.close(); };
+      } catch (e) {
+        // Some mobile browsers only allow notifications via a service worker.
+        console.error('Browser notification failed:', e);
+      }
+    }
+
+    function showToast(m) {
+      var preview = m.body ? m.body : (m.file_count ? '📎 ' + m.file_count + ' attachment' + (m.file_count === 1 ? '' : 's') : '');
+      if (preview.length > 140) preview = preview.slice(0, 140) + '…';
+      var internal = m.visibility === 'internal';
+      var link = 'ticket-chat.html?ticket=' + encodeURIComponent(m.ticket_id) + '&role=' + role;
+      showBrowserNotification(m, preview, link);
+
+      var toast = document.createElement('a');
+      toast.className = 'toast' + (internal ? ' toast-internal' : '');
+      toast.href = link;
+      toast.innerHTML =
+        '<button class="toast-close" type="button" aria-label="Dismiss">×</button>' +
+        '<p class="toast-title">' + (internal ? 'New internal note' : 'New message') + ' · ' + escapeText(m.ticket_id) + '</p>' +
+        '<p class="toast-from">' + escapeText(m.author_name) + ' <span>on "' + escapeText(m.subject) + '"</span></p>' +
+        (preview ? '<p class="toast-body">' + escapeText(preview) + '</p>' : '') +
+        '<p class="toast-cta">Open conversation →</p>';
+
+      function dismiss() {
+        toast.classList.add('toast-out');
+        setTimeout(function () { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 250);
+      }
+      toast.querySelector('.toast-close').addEventListener('click', function (e) {
+        e.preventDefault(); e.stopPropagation(); dismiss();
+      });
+      stack.appendChild(toast);
+      // Keep at most 4 message toasts on screen; the oldest goes first.
+      var toasts = stack.querySelectorAll('.toast:not(.toast-prompt)');
+      for (var i = 0; i < toasts.length - 4; i++) stack.removeChild(toasts[i]);
+      setTimeout(dismiss, 10000);
+    }
+
+    function poll() {
+      var url = API_BASE + '/api/notifications/messages' + (cursor != null ? '?after_id=' + encodeURIComponent(cursor) : '');
+      fetch(url, { headers: { 'Authorization': 'Bearer ' + actor.token } })
+        .then(function (response) {
+          if (!response.ok) throw new Error('notification poll failed (' + response.status + ')');
+          return response.json();
+        })
+        .then(function (data) {
+          (data.messages || []).forEach(function (m) {
+            if (m.ticket_id !== openChatTicket) showToast(m);
+          });
+          cursor = String(data.latest_id);
+          try { localStorage.setItem(cursorKey, cursor); } catch (e) { /* cursor just won't persist */ }
+        })
+        .catch(function (err) { console.error('Message notifications:', err); });
+    }
+
+    offerBrowserNotifications();
+    poll();
+    setInterval(poll, 5000);
+  })();
+
   // Swap a server-updated ticket into an in-memory list, in place.
   function replaceTicketIn(list, updated) {
     var idx = list.findIndex(function (x) { return x.id === updated.id; });
