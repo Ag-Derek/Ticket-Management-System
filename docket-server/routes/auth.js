@@ -35,14 +35,19 @@ async function findOwnerByEmail(email, roleHint) {
   const candidates = [];
   for (const { table, ownerType } of OWNER_TABLES) {
     if (roleHint && ownerType !== roleHint) continue;
-    const result = await db.query(`SELECT id, email, full_name FROM ${table} WHERE email = $1`, [email]);
+    // lower() on the column too, so a row stored with capitals before emails
+    // were normalized still matches.
+    const result = await db.query(`SELECT id, email, full_name FROM ${table} WHERE lower(email) = $1`, [email]);
     if (result.rows[0]) candidates.push({ ownerType, ...result.rows[0] });
   }
   return candidates;
 }
 
 router.post('/login', async (req, res) => {
-  const { email, password, role } = req.body || {};
+  const { password, role } = req.body || {};
+  // Same normalization as POST /api/users and /api/agents, so " Admin@X.com"
+  // isn't reported as a wrong password.
+  const email = typeof (req.body || {}).email === 'string' ? req.body.email.trim().toLowerCase() : '';
 
   if (!email || !password) {
     return res.status(400).json({ error: 'email and password are required' });

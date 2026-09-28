@@ -15,10 +15,16 @@ async function seedAdmin() {
   // verified with a real bcrypt.compare() in the login route.
   const passwordHash = bcrypt.hashSync('Admin2026!', 10);
   const adminId = 'ADM-2026-000001';
+  // Must be a mailbox someone can read: the login MFA code is sent here.
+  // Keep it in sync with the demo note on client/admin-login.html.
+  const adminEmail = (process.env.ADMIN_EMAIL || 'admin@docket.com').trim().toLowerCase();
 
+  // DO UPDATE on email so re-running the seed with a new ADMIN_EMAIL fixes
+  // the existing row instead of silently keeping the old address.
   await db.query(
-    'INSERT INTO admins (id, email, full_name) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING',
-    [adminId, 'admin@docket.com', 'System Administrator']
+    `INSERT INTO admins (id, email, full_name) VALUES ($1, $2, $3)
+     ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email`,
+    [adminId, adminEmail, 'System Administrator']
   );
 
   // Credentials live in auth_credentials, not on admins directly — see
@@ -31,7 +37,7 @@ async function seedAdmin() {
     [adminId, passwordHash]
   );
 
-  console.log('Seeded admin account admin@docket.com (or confirmed it already exists).');
+  console.log(`Seeded admin account ${adminEmail} (or confirmed it already exists).`);
 }
 
 async function seed() {
