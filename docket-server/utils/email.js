@@ -7,12 +7,19 @@
 //                    Falls back to Resend's shared test sender, which can only
 //                    deliver to the email address that owns the Resend account.
 //
+// APP_URL          — where the client/ pages are served, e.g.
+//                    "https://docket.example.com". Used to build links in
+//                    emails (password reset, portal). Deliberately config,
+//                    not the request's Origin/Host header, which a caller
+//                    controls and could point a reset link at their own site.
+//
 // With no RESEND_API_KEY outside production, emails are printed to the
 // console instead of sent, so local dev works without a Resend account —
 // with a loud warning so it can't go unnoticed.
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const EMAIL_FROM = process.env.EMAIL_FROM || 'Docket <onboarding@resend.dev>';
+const APP_URL = (process.env.APP_URL || '').trim().replace(/\/+$/, '') || null;
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
 if (!RESEND_API_KEY && IS_PRODUCTION) {
@@ -40,4 +47,24 @@ async function sendEmail({ to, subject, text, html }) {
   }
 }
 
-module.exports = { sendEmail };
+// Anything user-supplied (ticket subjects, resolution notes, names) goes
+// through this before landing in an email's html.
+function escapeHtml(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// Absolute link to a client page, or null when APP_URL isn't configured.
+function appLink(pathAndQuery) {
+  return APP_URL ? `${APP_URL}/${pathAndQuery.replace(/^\/+/, '')}` : null;
+}
+
+function greetingFor(fullName) {
+  return fullName ? `Hi ${String(fullName).trim().split(' ')[0]},` : 'Hi,';
+}
+
+module.exports = { sendEmail, escapeHtml, appLink, greetingFor };

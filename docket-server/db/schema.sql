@@ -78,6 +78,21 @@ CREATE TABLE IF NOT EXISTS mfa_challenges (
   CHECK (owner_type IN ('user', 'agent', 'admin'))
 );
 
+-- One row per emailed password-reset link. Only a SHA-256 of the link's
+-- token is stored — the token is 256 random bits, so (unlike the 5-digit
+-- MFA code) it needs no HMAC secret or attempt counter to be unguessable.
+-- Only accounts with local credentials (a password) can have one.
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+  id            INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  owner_type    TEXT NOT NULL,               -- user | agent | admin
+  owner_id      TEXT NOT NULL,
+  token_hash    TEXT UNIQUE NOT NULL,
+  expires_at    TIMESTAMPTZ NOT NULL,
+  used_at       TIMESTAMPTZ,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (owner_type IN ('user', 'agent', 'admin'))
+);
+
 CREATE TABLE IF NOT EXISTS tickets (
   id                  TEXT PRIMARY KEY,      -- TKT-2026-000001
   user_id             TEXT NOT NULL REFERENCES users(id),
@@ -167,6 +182,7 @@ CREATE INDEX IF NOT EXISTS idx_attachments_ticket ON ticket_attachments(ticket_i
 CREATE INDEX IF NOT EXISTS idx_attachments_comment ON ticket_attachments(comment_id);
 CREATE INDEX IF NOT EXISTS idx_auth_owner ON auth_credentials(owner_type, owner_id);
 CREATE INDEX IF NOT EXISTS idx_mfa_challenges_email ON mfa_challenges(owner_type, email, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_password_resets_owner ON password_reset_tokens(owner_type, owner_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs(entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_actor ON audit_logs(actor_type, actor_id);

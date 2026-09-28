@@ -1111,6 +1111,138 @@ document.addEventListener('DOMContentLoaded', function () {
           submitAdminLoginBtn.textContent = submitAdminLoginDefaultLabel;
         });
     });
+
+    var adminForgotLink = document.getElementById('adminForgotPassword');
+    if (adminForgotLink) {
+      adminForgotLink.addEventListener('click', function (e) {
+        e.preventDefault();
+        promptForPasswordReset('admin', document.getElementById('adminEmail').value.trim());
+      });
+    }
+  }
+
+  // ---- Forgot password: emails a reset link (POST /api/auth/password-reset/request) ----
+  // Reuses the MFA dialog's overlay styling. The server answers the same way
+  // whether or not the email has an account, so the dialog does too.
+  function promptForPasswordReset(role, prefillEmail) {
+    var overlay = document.createElement('div');
+    overlay.className = 'mfa-overlay';
+    overlay.innerHTML =
+      '<div class="mfa-dialog" role="dialog" aria-modal="true" aria-labelledby="resetTitle">' +
+        '<h2 id="resetTitle">Reset your password</h2>' +
+        '<p class="lead">Enter your account email and we\'ll send you a link to choose a new password.</p>' +
+        '<div class="field" id="f-resetEmail">' +
+          '<label for="resetEmail">Email</label>' +
+          '<input type="email" id="resetEmail" autocomplete="email">' +
+          '<div class="err" id="err-resetEmail">Enter a valid email address.</div>' +
+        '</div>' +
+        '<button class="btn-amber" type="button" id="resetSend">Send reset link</button>' +
+        '<div class="mfa-status" id="resetStatus" aria-live="polite"></div>' +
+        '<div class="mfa-actions"><span></span><a href="#" id="resetClose">Close</a></div>' +
+      '</div>';
+    document.body.appendChild(overlay);
+
+    var input = overlay.querySelector('#resetEmail');
+    var field = overlay.querySelector('#f-resetEmail');
+    var errEl = overlay.querySelector('#err-resetEmail');
+    var sendBtn = overlay.querySelector('#resetSend');
+    var statusEl = overlay.querySelector('#resetStatus');
+    input.value = prefillEmail || '';
+    input.focus();
+
+    function close() {
+      document.removeEventListener('keydown', onKeydown);
+      overlay.remove();
+    }
+    function onKeydown(e) {
+      if (e.key === 'Escape') { e.preventDefault(); close(); }
+    }
+
+    function send() {
+      if (sendBtn.disabled) return;
+      var email = input.value.trim();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        errEl.textContent = 'Enter a valid email address.';
+        field.classList.add('invalid');
+        return;
+      }
+      field.classList.remove('invalid');
+      sendBtn.disabled = true;
+      sendBtn.textContent = 'Sending…';
+      statusEl.textContent = '';
+
+      postJson('/api/auth/password-reset/request', { email: email, role: role })
+        .then(function (res) {
+          if (!res.ok) throw new Error(res.data.error || 'Unable to send a reset link.');
+          statusEl.textContent = res.data.message || 'Check your inbox for a reset link.';
+          sendBtn.textContent = 'Link sent';
+        })
+        .catch(function (err) {
+          errEl.textContent = err.message && err.message !== 'Failed to fetch' ? err.message : 'Network error. Please try again.';
+          field.classList.add('invalid');
+          sendBtn.disabled = false;
+          sendBtn.textContent = 'Send reset link';
+        });
+    }
+
+    sendBtn.addEventListener('click', send);
+    input.addEventListener('keydown', function (e) { if (e.key === 'Enter') send(); });
+    overlay.querySelector('#resetClose').addEventListener('click', function (e) { e.preventDefault(); close(); });
+    document.addEventListener('keydown', onKeydown);
+  }
+
+  // ---- Reset password (reset-password.html): token from the emailed link's #fragment ----
+  var resetPasswordForm = document.getElementById('resetPasswordForm');
+  if (resetPasswordForm) {
+    var resetToken = new URLSearchParams(window.location.hash.slice(1)).get('token');
+    // Drop the token from the address bar/history now that it's been read.
+    if (window.history.replaceState) window.history.replaceState(null, '', window.location.pathname);
+
+    var newPassword = document.getElementById('newPassword');
+    var confirmPassword = document.getElementById('confirmPassword');
+    var newPasswordField = document.getElementById('f-newPassword');
+    var confirmPasswordField = document.getElementById('f-confirmPassword');
+    var newPasswordErr = document.getElementById('err-newPassword');
+    var submitResetBtn = document.getElementById('submitResetPassword');
+    var submitResetDefaultLabel = submitResetBtn.textContent;
+    var loginPageByRole = { admin: 'admin-login.html', agent: 'agent-login.html', user: 'login.html' };
+
+    if (!resetToken) {
+      newPasswordErr.textContent = 'This reset link is incomplete. Open the link from your email again, or request a new one.';
+      newPasswordField.classList.add('invalid');
+      submitResetBtn.disabled = true;
+    }
+
+    function submitReset() {
+      if (submitResetBtn.disabled) return;
+      newPasswordErr.textContent = 'Use at least 8 characters.';
+      var valid = true;
+      if (newPassword.value.length < 8) { newPasswordField.classList.add('invalid'); valid = false; }
+      else { newPasswordField.classList.remove('invalid'); }
+      if (confirmPassword.value !== newPassword.value) { confirmPasswordField.classList.add('invalid'); valid = false; }
+      else { confirmPasswordField.classList.remove('invalid'); }
+      if (!valid) return;
+
+      submitResetBtn.disabled = true;
+      submitResetBtn.textContent = 'Saving…';
+
+      postJson('/api/auth/password-reset/confirm', { token: resetToken, password: newPassword.value })
+        .then(function (res) {
+          if (!res.ok) throw new Error(res.data.error || 'Unable to reset your password.');
+          document.getElementById('resetPasswordSignIn').href = loginPageByRole[res.data.role] || 'login.html';
+          resetPasswordForm.style.display = 'none';
+          document.getElementById('resetPasswordStub').classList.add('show');
+        })
+        .catch(function (err) {
+          newPasswordErr.textContent = err.message && err.message !== 'Failed to fetch' ? err.message : 'Network error. Please try again.';
+          newPasswordField.classList.add('invalid');
+          submitResetBtn.disabled = false;
+          submitResetBtn.textContent = submitResetDefaultLabel;
+        });
+    }
+
+    submitResetBtn.addEventListener('click', submitReset);
+    confirmPassword.addEventListener('keydown', function (e) { if (e.key === 'Enter') submitReset(); });
   }
 
   // ---- Ticket creation (ticket.html): form + submitting animation, then hands off to portal.html ----

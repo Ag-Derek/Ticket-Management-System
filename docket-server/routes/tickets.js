@@ -6,6 +6,7 @@ const { requireAuth } = require('../middleware/authenticate');
 const { requireTicketAccess } = require('../middleware/authorize');
 const { asyncHandler } = require('../utils/async-handler');
 const { recordAuditLog, resolveActorName } = require('../utils/audit');
+const { notifyTicketCreated, notifyTicketResolved } = require('../utils/ticket-notifications');
 
 const router = express.Router();
 
@@ -196,6 +197,8 @@ router.post('/', requireAuth(['user', 'admin']), asyncHandler(async (req, res) =
     entityId: id,
     details: { subject: subject.trim(), category, priority }
   });
+
+  notifyTicketCreated(id);
 
   res.status(201).json(await ticketWithComments(id));
 }));
@@ -395,6 +398,10 @@ router.patch(
         escalation_reason: escalation_reason || undefined
       }
     });
+
+    // "Completed" from the customer's side is Resolved — Closed is their own
+    // confirm-fix click, so emailing them about it would be redundant.
+    if (status === 'Resolved') notifyTicketResolved(req.params.id);
 
     res.json(await ticketWithComments(req.params.id));
   })

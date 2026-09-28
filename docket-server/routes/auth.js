@@ -19,6 +19,8 @@ const { signToken } = require('../middleware/authenticate');
 const { recordAuditLog } = require('../utils/audit');
 const { nextId } = require('../utils/ids');
 const { createChallenge, verifyChallenge, resendChallenge, MfaError, sendMfaError } = require('../utils/mfa');
+const { requestReset, completeReset, sendPasswordChangedEmail, PasswordResetError } = require('../utils/password-reset');
+const { appLink } = require('../utils/email');
 
 const router = express.Router();
 
@@ -257,6 +259,73 @@ router.post('/mfa/resend', async (req, res) => {
     if (err instanceof MfaError) return sendMfaError(res, err);
     console.error('POST /api/auth/mfa/resend error:', err);
     res.status(500).json({ error: 'failed to resend code' });
+  }
+});
+
+// POST /api/auth/password-reset/request  { email, role? }
+// Always answers the same way whether or not the email has an account (or
+// a password, or has hit the request limit), and does the lookup + send
+// after responding, so neither the body nor the response time reveals
+// which emails are registered.
+const RESET_REQUESTED_MESSAGE =
+  "If that email belongs to an account with a password, we've sent a link to reset it. Check your inbox.";
+
+router.post('/password-reset/request', (req, res) => {
+  const { role } = req.body || {};
+  const email = typeof (req.body || {}).email === 'string' ? req.body.email.trim().toLowerCase() : '';
+
+  if (!email) return res.status(400).json({ error: 'email is required' });
+  if (role && !OWNER_TABLES.some((t) => t.ownerType === role)) {
+    return res.status(400).json({ error: `role must be one of: ${OWNER_TABLES.map((t) => t.ownerType).join(', ')}` });
+  }
+  if (!appLink('')) {
+    console.error('Password reset requested but APP_URL is not set — cannot build a reset link.');
+    return res.status(503).json({ error: 'Password reset is not available right now. Contact your administrator.' });
+  }
+
+  res.json({ ok: true, message: RESET_REQUESTED_MESSAGE });
+
+  (async () => {
+    const matches = await findOwnerByEmail(email, role);
+    // Ambiguous (same email on two account types) or unknown: send nothing.
+    if (matches.length !== 1) return;
+    const owner = matches[0];
+    const sent = await requestReset({ ownerType: owner.ownerType, id: owner.id, email: owner.email, full_name: owner.full_name });
+    recordAuditLog({
+      actorType: owner.ownerType,
+      actorId: owner.id,
+      actorName: owner.full_name,
+      action: 'auth.password_reset_requested',
+      details: { email, sent }
+    });
+  })().catch((err) => console.error('POST /api/auth/password-reset/request error:', err));
+});
+
+// POST /api/auth/password-reset/confirm  { token, password }
+// Doesn't sign the person in — they go back to the login page and sign in
+// (with MFA) using the new password.
+router.post('/password-reset/confirm', async (req, res) => {
+  const { token, password } = req.body || {};
+  try {
+    const owner = await completeReset(token, password);
+
+    recordAuditLog({
+      actorType: owner.ownerType,
+      actorId: owner.id,
+      actorName: owner.full_name,
+      action: 'auth.password_reset_completed',
+      details: { email: owner.email }
+    });
+
+    if (owner.email) {
+      sendPasswordChangedEmail(owner).catch((err) => console.error('Password reset: failed to send confirmation email:', err));
+    }
+
+    res.json({ ok: true, role: owner.ownerType });
+  } catch (err) {
+    if (err instanceof PasswordResetError) return res.status(err.status).json({ error: err.message });
+    console.error('POST /api/auth/password-reset/confirm error:', err);
+    res.status(500).json({ error: 'failed to reset password' });
   }
 });
 

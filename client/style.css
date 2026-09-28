@@ -233,6 +233,7 @@ h1.display{
 .mfa-dialog h2{margin:0 0 8px;font-size:22px;}
 .mfa-dialog .lead{font-size:14px;color:var(--muted);margin:0 0 22px;line-height:1.6;overflow-wrap:anywhere;}
 .mfa-dialog .field input{font-size:22px;letter-spacing:8px;text-align:center;font-variant-numeric:tabular-nums;}
+.mfa-dialog .field input[type="email"]{font-size:14.5px;letter-spacing:normal;text-align:left;}
 .mfa-dialog .btn-amber:disabled{opacity:.6;cursor:not-allowed;}
 .mfa-actions{display:flex;justify-content:space-between;margin-top:16px;font-size:13px;}
 .mfa-actions a{color:var(--blue-2);font-weight:600;text-decoration:none;}
