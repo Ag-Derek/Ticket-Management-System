@@ -105,7 +105,7 @@ document.addEventListener('DOMContentLoaded', function () {
     if (readSession('docketAdmin')) { clearSession('docketAdmin'); window.location.href = 'admin-login.html'; return true; }
     var hasUser = false;
     try { hasUser = !!JSON.parse(localStorage.getItem('docketUser')); } catch (e) { hasUser = false; }
-    if (hasUser) { localStorage.removeItem('docketUser'); window.location.href = 'landing.html'; return true; }
+    if (hasUser) { localStorage.removeItem('docketUser'); window.location.href = 'login.html'; return true; }
     return false;
   }
 
@@ -387,6 +387,93 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   }
 
+  // Stores a customer's POST /api/auth/mfa/verify response as the
+  // `docketUser` session (shared by sign-up and sign-in). Normalizes the
+  // API's `full_name` into the `name` field the rest of app.js (ticket
+  // creation, portal, chat) already reads. The server record is the source
+  // of truth; this is just a session cache.
+  function saveUserSession(verified) {
+    var data = verified.record;
+    var user = {
+      id: data.id,
+      name: data.full_name,
+      email: data.email,
+      phone: data.phone,
+      department: data.department,
+      organization: data.organization,
+      token: verified.token
+    };
+    localStorage.setItem('docketUser', JSON.stringify(user));
+    return user;
+  }
+
+  // ---- Customer sign-in (login.html): email -> emailed code -> portal ----
+  var signInForm = document.getElementById('signInForm');
+  if (signInForm) {
+    var signedInUser = null;
+    try { signedInUser = JSON.parse(localStorage.getItem('docketUser')); } catch (e) { signedInUser = null; }
+    if (signedInUser && signedInUser.token) {
+      window.location.replace('portal.html');
+      return;
+    }
+
+    var signInEmail = document.getElementById('signInEmail');
+    var signInField = document.getElementById('f-signInEmail');
+    var signInErr = document.getElementById('err-signInEmail');
+    var submitSignInBtn = document.getElementById('submitSignIn');
+    var submitSignInDefaultLabel = submitSignInBtn.textContent;
+
+    function showSignInError(message) {
+      signInErr.textContent = message;
+      signInField.classList.add('invalid');
+    }
+
+    function submitSignIn() {
+      if (submitSignInBtn.disabled) return;
+      var email = signInEmail.value.trim();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        showSignInError('Enter a valid email address.');
+        return;
+      }
+      signInField.classList.remove('invalid');
+      submitSignInBtn.disabled = true;
+      submitSignInBtn.textContent = 'Sending code…';
+
+      postJson('/api/users/sign-in', { email: email })
+        .then(function (res) {
+          if (res.ok) return promptForMfaCode(res.data, email);
+          if (res.data.signup) {
+            signInErr.innerHTML = '';
+            signInErr.appendChild(document.createTextNode((res.data.error || 'No account found.') + ' '));
+            var link = document.createElement('a');
+            link.href = 'profile.html';
+            link.textContent = 'Create an account';
+            signInErr.appendChild(link);
+            signInField.classList.add('invalid');
+            return null;
+          }
+          throw new Error(res.data.error || 'Unable to sign in.');
+        })
+        .then(function (verified) {
+          if (!verified) return;
+          saveUserSession(verified);
+          window.location.href = 'portal.html';
+        })
+        .catch(function (err) {
+          if (err.cancelled) return;
+          console.error('Sign-in error:', err);
+          showSignInError(err.message || 'Something went wrong. Please try again.');
+        })
+        .finally(function () {
+          submitSignInBtn.disabled = false;
+          submitSignInBtn.textContent = submitSignInDefaultLabel;
+        });
+    }
+
+    submitSignInBtn.addEventListener('click', submitSignIn);
+    signInEmail.addEventListener('keydown', function (e) { if (e.key === 'Enter') submitSignIn(); });
+  }
+
   // Profile form validation + confirmation stub
   var profileForm = document.getElementById('profileForm');
   if (profileForm) {
@@ -494,23 +581,9 @@ document.addEventListener('DOMContentLoaded', function () {
           return promptForMfaCode(challenge, email.value.trim());
         })
         .then(function (verified) {
-          // Normalize the API's `full_name` into the `name` field the rest
-          // of app.js (ticket creation, portal, chat) already reads.
-          var data = verified.record;
-          var newUser = {
-            id: data.id,
-            name: data.full_name,
-            email: data.email,
-            phone: data.phone,
-            department: data.department,
-            organization: data.organization,
-            token: verified.token
-          };
+          var newUser = saveUserSession(verified);
           document.getElementById('f-email').classList.remove('invalid');
           showProfileStub(newUser, verified.returning === true);
-          // Hand the profile off to the ticket page — the Render/SQLite
-          // record is now the source of truth; this is just a session cache.
-          localStorage.setItem('docketUser', JSON.stringify(newUser));
         })
         .catch(function (err) {
           if (err.cancelled) return;
@@ -2593,7 +2666,7 @@ document.addEventListener('DOMContentLoaded', function () {
   if (logoutBtn) {
     logoutBtn.addEventListener('click', function () {
       localStorage.removeItem('docketUser');
-      window.location.href = 'landing.html';
+      window.location.href = 'login.html';
     });
   }
 

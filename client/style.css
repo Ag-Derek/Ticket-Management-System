@@ -59,6 +59,10 @@ body{
   font-size:13px;font-weight:600;padding:11px 22px;border-radius:999px;
   border:1.5px solid var(--ink);background:transparent;color:var(--ink);
 }
+a.topbar-cta{text-decoration:none;transition:background .2s ease,color .2s ease;}
+a.topbar-cta:hover{background:var(--ink);color:#fff;}
+.form-switch{text-align:center;font-size:13.5px;color:var(--muted);margin:18px 0 0;}
+.form-switch a{color:var(--blue-2);font-weight:600;}
 .topbar-actions{display:flex;align-items:center;gap:10px;}
 .btn-ghost{
   font-family:'Inter',sans-serif;font-size:13px;font-weight:600;

@@ -62,6 +62,42 @@ router.post('/', async (req, res) => {
   }
 });
 
+// POST /api/users/sign-in  { email }
+// Returning customers (login.html): email only, no profile fields. An
+// unknown email gets a 404 pointing at sign-up rather than a code — this
+// does reveal whether an account exists, but GET /api/users/by-email
+// already does too, so hiding it here would protect nothing.
+router.post('/sign-in', async (req, res) => {
+  const email = typeof (req.body || {}).email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  if (!EMAIL_RE.test(email)) {
+    return res.status(400).json({ error: 'a valid email is required' });
+  }
+
+  try {
+    const result = await db.query('SELECT * FROM users WHERE email = $1', [email]);
+    const existing = result.rows[0];
+    if (!existing) {
+      return res.status(404).json({ error: "We couldn't find an account with that email.", signup: true });
+    }
+
+    const challenge = await createChallenge({ ownerType: 'user', ownerId: existing.id, email, fullName: existing.full_name });
+
+    recordAuditLog({
+      actorType: 'user',
+      actorId: existing.id,
+      actorName: existing.full_name,
+      action: 'auth.mfa_sent',
+      details: { email, new_account: false }
+    });
+
+    res.json(challenge);
+  } catch (err) {
+    if (err instanceof MfaError) return sendMfaError(res, err);
+    console.error('POST /api/users/sign-in error:', err);
+    res.status(500).json({ error: 'failed to sign in' });
+  }
+});
+
 // GET /api/users/by-email/:email
 router.get('/by-email/:email', async (req, res) => {
   const email = req.params.email.trim().toLowerCase();
