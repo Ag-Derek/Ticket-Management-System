@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db/connection');
 const { nextId } = require('../utils/ids');
-const { saveAttachmentFile } = require('../utils/attachment-storage');
+const { saveAttachmentFile, removeAttachmentFiles } = require('../utils/attachment-storage');
 const { requireAuth } = require('../middleware/authenticate');
 const { requireTicketAccess } = require('../middleware/authorize');
 const { asyncHandler } = require('../utils/async-handler');
@@ -454,5 +454,48 @@ router.patch(
     res.json(await ticketWithComments(req.params.id));
   })
 );
+
+// DELETE /api/tickets/:id — admin-only hard delete, for clearing out old or
+// test tickets. Removes the ticket's attachments (creation-time and chat)
+// and comments with it. Audit log rows are deliberately kept, so the trail
+// still shows the ticket existed and who deleted it.
+router.delete('/:id', requireAuth(['admin']), asyncHandler(async (req, res) => {
+  const ticketResult = await db.query('SELECT id, subject, status FROM tickets WHERE id = $1', [req.params.id]);
+  const ticket = ticketResult.rows[0];
+  if (!ticket) return res.status(404).json({ error: 'not found' });
+
+  let storedPaths;
+  try {
+    storedPaths = await db.withTransaction(async (client) => {
+      const attachmentsResult = await client.query(
+        `DELETE FROM ticket_attachments
+         WHERE ticket_id = $1
+            OR comment_id IN (SELECT id FROM ticket_comments WHERE ticket_id = $1)
+         RETURNING stored_path`,
+        [ticket.id]
+      );
+      await client.query('DELETE FROM ticket_comments WHERE ticket_id = $1', [ticket.id]);
+      await client.query('DELETE FROM tickets WHERE id = $1', [ticket.id]);
+      return attachmentsResult.rows.map((r) => r.stored_path);
+    });
+  } catch (err) {
+    console.error('DELETE /api/tickets/:id error:', err);
+    return res.status(500).json({ error: 'failed to delete ticket' });
+  }
+
+  removeAttachmentFiles(storedPaths).catch((err) => console.error('DELETE /api/tickets/:id: storage cleanup failed', err));
+
+  recordAuditLog({
+    actorType: req.actor.role,
+    actorId: req.actor.id,
+    actorName: await resolveActorName(req.actor),
+    action: 'ticket.deleted',
+    entityType: 'ticket',
+    entityId: ticket.id,
+    details: { subject: ticket.subject, status: ticket.status }
+  });
+
+  res.status(204).end();
+}));
 
 module.exports = router;

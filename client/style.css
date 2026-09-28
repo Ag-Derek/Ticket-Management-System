@@ -71,6 +71,9 @@ a.topbar-cta:hover{background:var(--ink);color:#fff;}
   transition:background .2s ease,color .2s ease,border-color .2s ease;
 }
 .btn-ghost:hover{background:var(--ink);color:#fff;}
+.btn-danger{border-color:#B14A1F;color:#B14A1F;}
+.btn-danger:hover{background:#B14A1F;color:#fff;}
+.btn-danger.btn-small{padding:5px 12px;font-size:11.5px;}
 .btn-ghost:focus-visible{outline:2px solid var(--blue-2);outline-offset:2px;}
 .btn-logout{border-color:var(--line);color:var(--muted);}
 .btn-logout:hover{background:#B14A1F;border-color:#B14A1F;color:#fff;}

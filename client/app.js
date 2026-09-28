@@ -2938,6 +2938,35 @@ document.addEventListener('DOMContentLoaded', function () {
       });
     });
 
+    // Shared by the ticket and agent delete buttons — both are admin-only
+    // DELETE routes that only need a success/failure back.
+    function adminDelete(path) {
+      return fetch(API_BASE + path, { method: 'DELETE', headers: authHeaders() })
+        .then(function (response) {
+          if (response.status === 401 && handleAuthExpired()) return new Promise(function () {});
+          if (response.ok) return null;
+          return response.json().catch(function () { return {}; }).then(function (data) {
+            throw new Error(data.error || 'Request failed.');
+          });
+        });
+    }
+
+    document.getElementById('adminDeleteTicketBtn').addEventListener('click', function () {
+      var t = adminTickets.filter(function (x) { return x.id === adminSelectedId; })[0];
+      if (!t) return;
+      if (!confirm('Permanently delete ' + t.id + ' ("' + t.subject + '")? Its conversation and attachments will be deleted too. This cannot be undone.')) return;
+
+      var btn = this;
+      btn.disabled = true;
+      adminDelete('/api/tickets/' + encodeURIComponent(t.id))
+        .then(function () {
+          delete adminKnownSignature[t.id];
+          applyRemoteAdminUpdate(adminTickets.filter(function (x) { return x.id !== t.id; }));
+        })
+        .catch(function (err) { alert(err.message || 'Unable to delete this ticket.'); })
+        .finally(function () { btn.disabled = false; });
+    });
+
     function renderAdminDetail() {
       var dash = document.getElementById('adminDash');
       var t = adminTickets.filter(function (x) { return x.id === adminSelectedId; })[0];
@@ -3214,7 +3243,31 @@ document.addEventListener('DOMContentLoaded', function () {
             '<span class="history-chip">' + a.email + '</span>' +
             '<span class="history-chip">' + ticketCountFor(a.name) + ' assigned</span>' +
             '<span class="history-chip">' + sourceLabel + '</span>' +
+            '<button class="btn-ghost btn-danger btn-small" type="button">Remove</button>' +
           '</div>';
+        row.querySelector('.btn-danger').addEventListener('click', function () {
+          var assigned = ticketCountFor(a.name);
+          var msg = 'Remove ' + a.name + ' (' + a.email + ')? They will no longer be able to sign in.' +
+            (assigned ? ' Their ' + assigned + ' assigned ticket(s) will be moved back to Unassigned.' : '');
+          if (!confirm(msg)) return;
+
+          var btn = this;
+          btn.disabled = true;
+          adminDelete('/api/agents/' + encodeURIComponent(a.id))
+            .then(function () {
+              refreshAgentDirectory(function () {
+                renderAgentDirectory();
+                renderAdminStats();
+                populateAssigneeFilter();
+              });
+              // Pick up the unassigned tickets now rather than on the next poll.
+              fetchTickets(null, applyRemoteAdminUpdate);
+            })
+            .catch(function (err) {
+              btn.disabled = false;
+              alert(err.message || 'Unable to remove this agent.');
+            });
+        });
         listEl.appendChild(row);
       });
     }

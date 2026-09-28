@@ -61,4 +61,14 @@ async function fetchAttachmentFile(storedPath) {
   return Buffer.from(await data.arrayBuffer());
 }
 
-module.exports = { saveAttachmentFile, fetchAttachmentFile, sanitizeFilename, MAX_ATTACHMENT_BYTES, BUCKET };
+// Best-effort removal of stored files when their ticket is deleted. The DB
+// rows are already gone by the time this runs, so a failure here only
+// leaves an orphaned object in the bucket — logged, never thrown.
+async function removeAttachmentFiles(storedPaths) {
+  const paths = storedPaths.filter(Boolean);
+  if (!paths.length) return;
+  const { error } = await supabase.storage.from(BUCKET).remove(paths);
+  if (error) console.error('removeAttachmentFiles: failed to remove from storage', error);
+}
+
+module.exports = { saveAttachmentFile, fetchAttachmentFile, removeAttachmentFiles, sanitizeFilename, MAX_ATTACHMENT_BYTES, BUCKET };

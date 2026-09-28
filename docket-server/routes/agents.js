@@ -1,8 +1,8 @@
 const express = require('express');
 const db = require('../db/connection');
 const { nextId } = require('../utils/ids');
-const { verifyToken } = require('../middleware/authenticate');
-const { recordAuditLog } = require('../utils/audit');
+const { verifyToken, requireAuth } = require('../middleware/authenticate');
+const { recordAuditLog, resolveActorName } = require('../utils/audit');
 const { createChallenge, MfaError, sendMfaError } = require('../utils/mfa');
 
 const router = express.Router();
@@ -129,6 +129,52 @@ router.get('/:id/tickets', async (req, res) => {
   } catch (err) {
     console.error('GET /api/agents/:id/tickets error:', err);
     res.status(500).json({ error: 'failed to load tickets' });
+  }
+});
+
+// DELETE /api/agents/:id — admin-only. Any tickets still assigned to the
+// agent are unassigned first (back to Created, same as choosing
+// "Unassigned" in PATCH /tickets/:id/assign; Resolved/Closed stay put), and
+// any escalation suggestion pointing at them is cleared, so no FK is left
+// dangling. Their login credentials and pending sign-in codes go too.
+router.delete('/:id', requireAuth(['admin']), async (req, res) => {
+  try {
+    const agentResult = await db.query('SELECT id, full_name, email FROM agents WHERE id = $1', [req.params.id]);
+    const agent = agentResult.rows[0];
+    if (!agent) return res.status(404).json({ error: 'not found' });
+
+    const unassignedIds = await db.withTransaction(async (client) => {
+      const unassigned = await client.query(
+        `UPDATE tickets
+         SET assigned_agent_id = NULL,
+             status = CASE WHEN status IN ('Resolved', 'Closed') THEN status ELSE 'Created' END,
+             updated_at = now()
+         WHERE assigned_agent_id = $1
+         RETURNING id`,
+        [agent.id]
+      );
+      await client.query('UPDATE tickets SET suggested_agent_id = NULL WHERE suggested_agent_id = $1', [agent.id]);
+      await client.query(`DELETE FROM auth_credentials WHERE owner_type = 'agent' AND owner_id = $1`, [agent.id]);
+      await client.query(`DELETE FROM mfa_challenges WHERE owner_type = 'agent' AND owner_id = $1`, [agent.id]);
+      await client.query(`DELETE FROM password_reset_tokens WHERE owner_type = 'agent' AND owner_id = $1`, [agent.id]);
+      await client.query('DELETE FROM agents WHERE id = $1', [agent.id]);
+      return unassigned.rows.map((r) => r.id);
+    });
+
+    recordAuditLog({
+      actorType: req.actor.role,
+      actorId: req.actor.id,
+      actorName: await resolveActorName(req.actor),
+      action: 'agent.deleted',
+      entityType: 'agent',
+      entityId: agent.id,
+      details: { email: agent.email, full_name: agent.full_name, unassigned_tickets: unassignedIds }
+    });
+
+    res.json({ id: agent.id, unassigned_tickets: unassignedIds });
+  } catch (err) {
+    console.error('DELETE /api/agents/:id error:', err);
+    res.status(500).json({ error: 'failed to remove agent' });
   }
 });
 
