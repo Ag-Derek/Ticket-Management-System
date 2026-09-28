@@ -15,9 +15,9 @@ async function seedAdmin() {
   // verified with a real bcrypt.compare() in the login route.
   const passwordHash = bcrypt.hashSync('Admin2026!', 10);
   const adminId = 'ADM-2026-000001';
-  // Must be a mailbox someone can read: the login MFA code is sent here.
-  // Keep it in sync with the demo note on client/admin-login.html.
-  const adminEmail = (process.env.ADMIN_EMAIL || 'admin@docket.com').trim().toLowerCase();
+  // Must be a mailbox someone can read: the login MFA code and password
+  // reset links are sent here.
+  const adminEmail = (process.env.ADMIN_EMAIL || 'rematsd04@gmail.com').trim().toLowerCase();
 
   // DO UPDATE on email so re-running the seed with a new ADMIN_EMAIL fixes
   // the existing row instead of silently keeping the old address.
