@@ -1,6 +1,7 @@
 const express = require('express');
 const db = require('../db/connection');
 const { recordAuditLog } = require('../utils/audit');
+const { requireAuth } = require('../middleware/authenticate');
 const { createChallenge, MfaError, sendMfaError } = require('../utils/mfa');
 
 const router = express.Router();
@@ -65,8 +66,9 @@ router.post('/', async (req, res) => {
 // POST /api/users/sign-in  { email }
 // Returning customers (login.html): email only, no profile fields. An
 // unknown email gets a 404 pointing at sign-up rather than a code — this
-// does reveal whether an account exists, but GET /api/users/by-email
-// already does too, so hiding it here would protect nothing.
+// does reveal whether an account exists, a deliberate UX trade-off (the
+// per-IP rate limit in server.js keeps it from being used to bulk-check
+// addresses).
 router.post('/sign-in', async (req, res) => {
   const email = typeof (req.body || {}).email === 'string' ? req.body.email.trim().toLowerCase() : '';
   if (!EMAIL_RE.test(email)) {
@@ -98,8 +100,12 @@ router.post('/sign-in', async (req, res) => {
   }
 });
 
+// The GET routes below return customers' contact details, so they're
+// admin-only. A customer's own record comes back from POST
+// /api/auth/mfa/verify at sign-in; the client never reads these.
+
 // GET /api/users/by-email/:email
-router.get('/by-email/:email', async (req, res) => {
+router.get('/by-email/:email', requireAuth(['admin']), async (req, res) => {
   const email = req.params.email.trim().toLowerCase();
   try {
     const result = await db.query('SELECT * FROM users WHERE email = $1', [email]);
@@ -112,7 +118,7 @@ router.get('/by-email/:email', async (req, res) => {
 });
 
 // GET /api/users/:id
-router.get('/:id', async (req, res) => {
+router.get('/:id', requireAuth(['admin']), async (req, res) => {
   try {
     const result = await db.query('SELECT * FROM users WHERE id = $1', [req.params.id]);
     if (!result.rows[0]) return res.status(404).json({ error: 'not found' });
@@ -124,7 +130,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // GET /api/users
-router.get('/', async (req, res) => {
+router.get('/', requireAuth(['admin']), async (req, res) => {
   try {
     const result = await db.query('SELECT * FROM users ORDER BY created_at DESC');
     res.json(result.rows);

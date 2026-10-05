@@ -1,15 +1,18 @@
-// Email MFA: every sign-in (user, agent, admin) ends with a 5-digit code
+// Email MFA: every sign-in (user, agent, admin) ends with a 6-digit code
 // emailed to the account's address, and no session token is issued until
 // it's entered. The routes that used to mint a token directly
 // (POST /api/auth/login, POST /api/users, POST /api/agents) now call
 // createChallenge() instead; POST /api/auth/mfa/verify is the one place a
 // token comes out.
 //
-// A 5-digit code has only 100,000 values, so the limits below are what make
-// it safe, not the code length:
+// For customers and agents the code is the *only* credential (they have no
+// password), so the limits below are what make it safe, not the code
+// length alone:
 //   - MAX_ATTEMPTS wrong guesses burn the challenge (start over from login)
-//   - MAX_CHALLENGES_PER_WINDOW new challenges per email per window, so an
-//     attacker can't just keep requesting fresh codes to guess against
+//   - MAX_CHALLENGES_PER_WINDOW new challenges per email per window, and
+//     MAX_CHALLENGES_PER_DAY per email per 24h, so an attacker can't just
+//     keep requesting fresh codes to guess against. Together that's at most
+//     100 guesses a day against 1,000,000 codes.
 //   - a new challenge expires any older unused one for the same email
 //   - codes expire after CODE_TTL_MINUTES and are single-use
 // Only an HMAC of the code is stored — a database leak doesn't expose
@@ -17,14 +20,16 @@
 
 const crypto = require('crypto');
 const db = require('../db/connection');
-const { sendEmail } = require('./email');
+const { sendEmail, escapeHtml, greetingFor } = require('./email');
 
+const CODE_LENGTH = 6;
 const CODE_TTL_MINUTES = 10;
 const MAX_ATTEMPTS = 5;
 const MAX_SENDS = 3;                 // initial send + 2 resends
 const RESEND_COOLDOWN_SECONDS = 60;
 const MAX_CHALLENGES_PER_WINDOW = 5;
 const CHALLENGE_WINDOW_MINUTES = 15;
+const MAX_CHALLENGES_PER_DAY = 20;
 
 const SECRET = process.env.AUTH_TOKEN_SECRET;
 
@@ -39,7 +44,7 @@ class MfaError extends Error {
 }
 
 function generateCode() {
-  return String(crypto.randomInt(0, 100000)).padStart(5, '0');
+  return String(crypto.randomInt(0, 10 ** CODE_LENGTH)).padStart(CODE_LENGTH, '0');
 }
 
 // Salted with the challenge id so the same code on two challenges never
@@ -55,7 +60,9 @@ function codesMatch(challengeId, code, storedHash) {
 }
 
 async function sendCodeEmail(email, fullName, code) {
-  const greeting = fullName ? `Hi ${fullName.split(' ')[0]},` : 'Hi,';
+  // fullName can come straight from an unauthenticated sign-up form, so it
+  // must be escaped before it lands in the html body.
+  const greeting = greetingFor(fullName);
   await sendEmail({
     to: email,
     subject: `Your Docket sign-in code: ${code}`,
@@ -63,7 +70,7 @@ async function sendCodeEmail(email, fullName, code) {
       `${greeting}\n\nYour Docket sign-in code is ${code}. It expires in ${CODE_TTL_MINUTES} minutes.\n\n` +
       `If you didn't try to sign in, you can ignore this email — no one can get in without this code.`,
     html:
-      `<p>${greeting}</p>` +
+      `<p>${escapeHtml(greeting)}</p>` +
       `<p>Your Docket sign-in code is:</p>` +
       `<p style="font-size:28px;font-weight:700;letter-spacing:6px;margin:16px 0">${code}</p>` +
       `<p>It expires in ${CODE_TTL_MINUTES} minutes.</p>` +
@@ -81,6 +88,16 @@ async function createChallenge({ ownerType, ownerId, email, fullName, context })
   );
   if (Number(recent.rows[0].n) >= MAX_CHALLENGES_PER_WINDOW) {
     throw new MfaError(429, `Too many sign-in attempts. Try again in ${CHALLENGE_WINDOW_MINUTES} minutes.`);
+  }
+
+  // Relies on the housekeeping DELETE below keeping at least a day of rows.
+  const today = await db.query(
+    `SELECT COUNT(*) AS n FROM mfa_challenges
+     WHERE owner_type = $1 AND email = $2 AND created_at > now() - interval '1 day'`,
+    [ownerType, email]
+  );
+  if (Number(today.rows[0].n) >= MAX_CHALLENGES_PER_DAY) {
+    throw new MfaError(429, 'Too many sign-in attempts today. Try again tomorrow or contact your administrator.');
   }
 
   // Housekeeping, and invalidate any code still outstanding for this email.
@@ -112,8 +129,8 @@ async function createChallenge({ ownerType, ownerId, email, fullName, context })
 
 // Returns the challenge row on success; throws MfaError otherwise.
 async function verifyChallenge(challengeId, code) {
-  if (typeof challengeId !== 'string' || typeof code !== 'string' || !/^\d{5}$/.test(code.trim())) {
-    throw new MfaError(400, 'Enter the 5-digit code from your email.');
+  if (typeof challengeId !== 'string' || typeof code !== 'string' || !new RegExp(`^\\d{${CODE_LENGTH}}$`).test(code.trim())) {
+    throw new MfaError(400, `Enter the ${CODE_LENGTH}-digit code from your email.`);
   }
 
   // Count the attempt atomically before checking it, so parallel guesses

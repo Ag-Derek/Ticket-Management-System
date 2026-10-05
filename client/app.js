@@ -3,7 +3,21 @@ const API_BASE =
   window.location.hostname === 'localhost'
     ? 'http://localhost:4000'
     : 'https://ticket-management-system-9ssy.onrender.com';
-    
+
+// Must match CODE_LENGTH in docket-server/utils/mfa.js.
+const MFA_CODE_LENGTH = 6;
+
+// Anything that came from the server or the user (subjects, names, emails,
+// escalation reasons, audit details...) goes through this before being
+// concatenated into an innerHTML string. Customers and self-sign-in
+// visitors control those values, and they're rendered in the agent/admin
+// consoles where a session token sits in storage.
+function escapeHtml(value) {
+  return String(value == null ? '' : value).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+
 document.addEventListener('DOMContentLoaded', function () {
 
   // Show only the pill for the current page (based on data-step); hide the rest
@@ -110,7 +124,7 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   // ---- Email MFA (every sign-in: customer, agent, admin) ----
-  // The sign-in endpoints no longer return a token — they email a 5-digit
+  // The sign-in endpoints no longer return a token — they email a 6-digit
   // code and respond { mfaRequired, challengeId }. This opens a dialog to
   // collect the code and resolves with POST /api/auth/mfa/verify's response
   // ({ token, actor, record, returning }). It rejects with err.cancelled
@@ -135,10 +149,10 @@ document.addEventListener('DOMContentLoaded', function () {
       overlay.innerHTML =
         '<div class="mfa-dialog" role="dialog" aria-modal="true" aria-labelledby="mfaTitle">' +
           '<h2 id="mfaTitle">Check your email</h2>' +
-          '<p class="lead">We sent a 5-digit sign-in code to <strong></strong>. It expires in 10 minutes.</p>' +
+          '<p class="lead">We sent a ' + MFA_CODE_LENGTH + '-digit sign-in code to <strong></strong>. It expires in 10 minutes.</p>' +
           '<div class="field" id="f-mfaCode">' +
             '<label for="mfaCode">Sign-in code</label>' +
-            '<input type="text" id="mfaCode" inputmode="numeric" autocomplete="one-time-code" maxlength="5" placeholder="•••••">' +
+            '<input type="text" id="mfaCode" inputmode="numeric" autocomplete="one-time-code" maxlength="' + MFA_CODE_LENGTH + '" placeholder="••••••">' +
             '<div class="err" id="err-mfaCode"></div>' +
           '</div>' +
           '<button class="btn-amber" type="button" id="mfaVerify">Verify and sign in</button>' +
@@ -196,7 +210,7 @@ document.addEventListener('DOMContentLoaded', function () {
       function verify() {
         if (verifyBtn.disabled) return; // already checking (auto-submit + Enter)
         var code = input.value.replace(/\D/g, '');
-        if (code.length !== 5) { showError('Enter the 5-digit code from your email.'); return; }
+        if (code.length !== MFA_CODE_LENGTH) { showError('Enter the ' + MFA_CODE_LENGTH + '-digit code from your email.'); return; }
         field.classList.remove('invalid');
         verifyBtn.disabled = true;
         verifyBtn.textContent = 'Verifying…';
@@ -230,8 +244,8 @@ document.addEventListener('DOMContentLoaded', function () {
       }
 
       input.addEventListener('input', function () {
-        input.value = input.value.replace(/\D/g, '').slice(0, 5);
-        if (input.value.length === 5) verify();
+        input.value = input.value.replace(/\D/g, '').slice(0, MFA_CODE_LENGTH);
+        if (input.value.length === MFA_CODE_LENGTH) verify();
       });
       input.addEventListener('keydown', function (e) { if (e.key === 'Enter') verify(); });
       verifyBtn.addEventListener('click', verify);
@@ -621,7 +635,7 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   function refreshAgentDirectory(onDone, onError) {
-    fetch(API_BASE + '/api/agents')
+    fetch(API_BASE + '/api/agents', { headers: authHeaders() })
       .then(function (response) {
         if (!response.ok) throw new Error('Unable to load the agent directory.');
         return response.json();
@@ -1092,9 +1106,10 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   }
 
-  // Agent self-sign-in (agent-login.html): POST /api/agents finds-or-creates by
-  // email, but there's no agent password on the backend — the emailed MFA code
-  // is what actually proves the agent owns the address. The client-side
+  // Agent sign-in (agent-login.html): POST /api/agents looks the agent up by
+  // email (agents are invite-only — an unknown email gets an error, not a new
+  // account), and there's no agent password on the backend — the emailed MFA
+  // code is what actually proves the agent owns the address. The client-side
   // password check stays as-is (just requires something typed).
   function loginOrCreateAgentByEmail(email, fallbackName, onDone, onError) {
     fetch(API_BASE + '/api/agents', {
@@ -1153,9 +1168,7 @@ document.addEventListener('DOMContentLoaded', function () {
       submitAgentLoginBtn.disabled = true;
       submitAgentLoginBtn.textContent = 'Signing in…';
 
-      // Reuses an existing directory record if this email was set up from the admin
-      // console (so that identity sticks), otherwise creates one on the fly — same
-      // find-or-create contract as before, now backed by Render/SQLite.
+      // Only works for an email an admin has already added from the admin console.
       loginOrCreateAgentByEmail(email.value.trim(), displayName, function (record) {
         submitAgentLoginBtn.disabled = false;
         submitAgentLoginBtn.textContent = submitAgentLoginDefaultLabel;
@@ -1417,7 +1430,7 @@ document.addEventListener('DOMContentLoaded', function () {
       files.forEach(function (file, i) {
         var chip = document.createElement('span');
         chip.className = 'file-chip';
-        chip.innerHTML = '<span>' + file.name + '</span>';
+        chip.innerHTML = '<span>' + escapeHtml(file.name) + '</span>';
         var btn = document.createElement('button');
         btn.type = 'button';
         btn.setAttribute('aria-label', 'Remove ' + file.name);
@@ -1641,11 +1654,11 @@ document.addEventListener('DOMContentLoaded', function () {
       if (notifyBanner) {
         var bannerText = notifyBanner.querySelector('p');
         if (t.status === 'Closed') {
-          bannerText.innerHTML = 'You confirmed the fix for <strong id="dashEmail">' + t.email + '</strong> — this ticket is closed.';
+          bannerText.innerHTML = 'You confirmed the fix for <strong id="dashEmail">' + escapeHtml(t.email) + '</strong> — this ticket is closed.';
         } else if (t.status === 'Reopened') {
-          bannerText.innerHTML = 'You reopened this ticket — <strong id="dashEmail">' + t.email + '</strong> has been notified.';
+          bannerText.innerHTML = 'You reopened this ticket — <strong id="dashEmail">' + escapeHtml(t.email) + '</strong> has been notified.';
         } else {
-          bannerText.innerHTML = 'Confirmation sent to <strong id="dashEmail">' + t.email + '</strong> via the notification service.';
+          bannerText.innerHTML = 'Confirmation sent to <strong id="dashEmail">' + escapeHtml(t.email) + '</strong> via the notification service.';
         }
       }
 
@@ -1752,7 +1765,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
       }
       if (doneText) {
-        doneText.innerHTML = 'You rated this ticket <strong>' + csat.score + '/5</strong>' +
+        doneText.innerHTML = 'You rated this ticket <strong>' + escapeHtml(csat.score) + '/5</strong>' +
           (csat.comment ? ' — thanks for the note!' : ' — thanks for the feedback!');
       }
     }
@@ -1826,14 +1839,14 @@ document.addEventListener('DOMContentLoaded', function () {
         row.setAttribute('aria-label', 'View details for ' + t.subject);
         row.innerHTML =
           '<div class="history-main">' +
-            '<p class="history-id">' + t.id + '</p>' +
-            '<p class="history-subject">' + t.subject + '</p>' +
+            '<p class="history-id">' + escapeHtml(t.id) + '</p>' +
+            '<p class="history-subject">' + escapeHtml(t.subject) + '</p>' +
           '</div>' +
           '<div class="history-meta">' +
-            '<span class="history-chip">' + t.category + '</span>' +
-            '<span class="history-chip">' + t.priority + '</span>' +
-            '<span class="history-chip">' + t.team + '</span>' +
-            '<span class="history-status">' + t.status + '</span>' +
+            '<span class="history-chip">' + escapeHtml(t.category) + '</span>' +
+            '<span class="history-chip">' + escapeHtml(t.priority) + '</span>' +
+            '<span class="history-chip">' + escapeHtml(t.team) + '</span>' +
+            '<span class="history-status">' + escapeHtml(t.status) + '</span>' +
           '</div>';
         row.addEventListener('click', function () { showTicketDetails(t); });
         row.addEventListener('keydown', function (e) {
@@ -1917,9 +1930,9 @@ document.addEventListener('DOMContentLoaded', function () {
       toast.innerHTML =
         '<div class="ic">✓</div>' +
         '<div class="toast-body">' +
-          '<p class="toast-title">' + ticket.id + '</p>' +
-          '<p class="toast-sub">' + (ticket.subject ? ticket.subject + ' — ' : '') +
-            'now <strong>' + toStatus + '</strong> (was ' + (fromStatus || 'Created') + ')</p>' +
+          '<p class="toast-title">' + escapeHtml(ticket.id) + '</p>' +
+          '<p class="toast-sub">' + (ticket.subject ? escapeHtml(ticket.subject) + ' — ' : '') +
+            'now <strong>' + escapeHtml(toStatus) + '</strong> (was ' + escapeHtml(fromStatus || 'Created') + ')</p>' +
         '</div>' +
         '<button type="button" class="toast-close" aria-label="Dismiss notification">✕</button>';
       wrap.appendChild(toast);
@@ -2424,8 +2437,8 @@ document.addEventListener('DOMContentLoaded', function () {
       if (escBanner && escText) {
         if (t.status === 'Escalated' && t.escalation) {
           escBanner.style.display = 'flex';
-          escText.innerHTML = 'Escalated to <strong>' + t.escalation.to + '</strong>' +
-            (t.escalation.by ? ' by ' + t.escalation.by : '') + ': "' + t.escalation.reason + '"';
+          escText.innerHTML = 'Escalated to <strong>' + escapeHtml(t.escalation.to) + '</strong>' +
+            (t.escalation.by ? ' by ' + escapeHtml(t.escalation.by) : '') + ': "' + escapeHtml(t.escalation.reason) + '"';
         } else {
           escBanner.style.display = 'none';
         }
@@ -2503,14 +2516,14 @@ document.addEventListener('DOMContentLoaded', function () {
         if (t.id === selectedId) row.classList.add('active');
         row.innerHTML =
           '<div class="history-main">' +
-            '<p class="history-id">' + t.id + '</p>' +
-            '<p class="history-subject">' + t.subject + '</p>' +
+            '<p class="history-id">' + escapeHtml(t.id) + '</p>' +
+            '<p class="history-subject">' + escapeHtml(t.subject) + '</p>' +
           '</div>' +
           '<div class="history-meta">' +
-            '<span class="history-chip">' + t.category + '</span>' +
-            '<span class="history-chip">' + t.priority + '</span>' +
-            '<span class="history-chip">' + (t.assignedAgent ? t.assignedAgent : '<span class="history-unassigned">Unassigned</span>') + '</span>' +
-            '<span class="history-status">' + t.status + '</span>' +
+            '<span class="history-chip">' + escapeHtml(t.category) + '</span>' +
+            '<span class="history-chip">' + escapeHtml(t.priority) + '</span>' +
+            '<span class="history-chip">' + (t.assignedAgent ? escapeHtml(t.assignedAgent) : '<span class="history-unassigned">Unassigned</span>') + '</span>' +
+            '<span class="history-status">' + escapeHtml(t.status) + '</span>' +
           '</div>';
         row.addEventListener('click', function () { selectedId = t.id; renderDetail(); renderList(); });
         row.addEventListener('keydown', function (e) {
@@ -2816,7 +2829,7 @@ document.addEventListener('DOMContentLoaded', function () {
             var name = isObj ? f.filename : f;
             var id = isObj ? f.id : null;
             return id != null
-              ? '<a class="chat-attachment-chip" href="#" data-attachment-id="' + id + '">📎 ' + chatEscapeHtml(name) + '</a>'
+              ? '<a class="chat-attachment-chip" href="#" data-attachment-id="' + escapeHtml(id) + '">📎 ' + chatEscapeHtml(name) + '</a>'
               : '<span class="chat-attachment-chip">📎 ' + chatEscapeHtml(name) + '</span>';
           }).join('') + '</div>';
         }
@@ -2824,7 +2837,7 @@ document.addEventListener('DOMContentLoaded', function () {
           '<span class="chat-name">' + label + '</span>' +
           (m.text ? chatEscapeHtml(m.text) : '') +
           filesHtml +
-          '<span class="chat-time">' + m.time + '</span>';
+          '<span class="chat-time">' + escapeHtml(m.time) + '</span>';
         var downloadableFiles = m.files.filter(function (f) { return f && typeof f === 'object' && f.id != null; });
         bubble.querySelectorAll('.chat-attachment-chip[data-attachment-id]').forEach(function (chip, i) {
           var f = downloadableFiles[i];
@@ -3168,8 +3181,8 @@ document.addEventListener('DOMContentLoaded', function () {
       var escText = document.getElementById('adminDashEscalationText');
       if (t.status === 'Escalated' && t.escalation) {
         escBanner.style.display = 'flex';
-        escText.innerHTML = 'Escalated to <strong>' + t.escalation.to + '</strong>' +
-          (t.escalation.by ? ' by ' + t.escalation.by : '') + ': "' + t.escalation.reason + '"';
+        escText.innerHTML = 'Escalated to <strong>' + escapeHtml(t.escalation.to) + '</strong>' +
+          (t.escalation.by ? ' by ' + escapeHtml(t.escalation.by) : '') + ': "' + escapeHtml(t.escalation.reason) + '"';
       } else {
         escBanner.style.display = 'none';
       }
@@ -3207,14 +3220,14 @@ document.addEventListener('DOMContentLoaded', function () {
         if (t.id === adminSelectedId) row.classList.add('active');
         row.innerHTML =
           '<div class="history-main">' +
-            '<p class="history-id">' + t.id + '</p>' +
-            '<p class="history-subject">' + t.subject + '</p>' +
+            '<p class="history-id">' + escapeHtml(t.id) + '</p>' +
+            '<p class="history-subject">' + escapeHtml(t.subject) + '</p>' +
           '</div>' +
           '<div class="history-meta">' +
-            '<span class="history-chip">' + t.category + '</span>' +
-            '<span class="history-chip">' + t.priority + '</span>' +
-            '<span class="history-chip">' + (t.assignedAgent ? t.assignedAgent : '<span class="history-unassigned">Unassigned</span>') + '</span>' +
-            '<span class="history-status">' + t.status + '</span>' +
+            '<span class="history-chip">' + escapeHtml(t.category) + '</span>' +
+            '<span class="history-chip">' + escapeHtml(t.priority) + '</span>' +
+            '<span class="history-chip">' + (t.assignedAgent ? escapeHtml(t.assignedAgent) : '<span class="history-unassigned">Unassigned</span>') + '</span>' +
+            '<span class="history-status">' + escapeHtml(t.status) + '</span>' +
           '</div>';
         row.addEventListener('click', function () { adminSelectedId = t.id; renderAdminDetail(); renderAdminList(); });
         row.addEventListener('keydown', function (e) {
@@ -3384,12 +3397,12 @@ document.addEventListener('DOMContentLoaded', function () {
         var sourceLabel = a.createdBy === 'seed' ? 'Seed data' : (a.createdBy === 'admin' ? 'Added by admin' : 'Self sign-in');
         row.innerHTML =
           '<div class="history-main">' +
-            '<p class="history-id">' + a.id + '</p>' +
-            '<p class="history-subject">' + a.name + '</p>' +
+            '<p class="history-id">' + escapeHtml(a.id) + '</p>' +
+            '<p class="history-subject">' + escapeHtml(a.name) + '</p>' +
           '</div>' +
           '<div class="history-meta">' +
-            '<span class="history-chip">' + a.email + '</span>' +
-            '<span class="history-chip">' + ticketCountFor(a.name) + ' assigned</span>' +
+            '<span class="history-chip">' + escapeHtml(a.email) + '</span>' +
+            '<span class="history-chip">' + escapeHtml(ticketCountFor(a.name)) + ' assigned</span>' +
             '<span class="history-chip">' + sourceLabel + '</span>' +
             '<button class="btn-ghost btn-danger btn-small" type="button">Remove</button>' +
           '</div>';
@@ -3520,12 +3533,12 @@ document.addEventListener('DOMContentLoaded', function () {
         var entityLabel = r.entity_type ? (r.entity_type + (r.entity_id ? ' ' + r.entity_id : '')) : '';
         row.innerHTML =
           '<div class="history-main">' +
-            '<p class="history-id">' + when + '</p>' +
-            '<p class="history-subject">' + humanizeAction(r.action) + '</p>' +
+            '<p class="history-id">' + escapeHtml(when) + '</p>' +
+            '<p class="history-subject">' + escapeHtml(humanizeAction(r.action)) + '</p>' +
           '</div>' +
           '<div class="history-meta">' +
-            '<span class="history-chip">' + actorLabel + '</span>' +
-            (entityLabel ? '<span class="history-chip">' + entityLabel + '</span>' : '') +
+            '<span class="history-chip">' + escapeHtml(actorLabel) + '</span>' +
+            (entityLabel ? '<span class="history-chip">' + escapeHtml(entityLabel) + '</span>' : '') +
           '</div>';
         listEl.appendChild(row);
       });
@@ -3638,8 +3651,8 @@ document.addEventListener('DOMContentLoaded', function () {
         var row = document.createElement('div');
         row.className = 'history-row';
         row.innerHTML =
-          '<div class="history-main"><p class="history-subject">' + r[labelKey] + '</p></div>' +
-          '<div class="history-meta"><span class="history-chip">' + r.count + '</span></div>';
+          '<div class="history-main"><p class="history-subject">' + escapeHtml(r[labelKey]) + '</p></div>' +
+          '<div class="history-meta"><span class="history-chip">' + escapeHtml(r.count) + '</span></div>';
         listEl.appendChild(row);
       });
     }
@@ -3655,10 +3668,10 @@ document.addEventListener('DOMContentLoaded', function () {
         var row = document.createElement('div');
         row.className = 'history-row';
         row.innerHTML =
-          '<div class="history-main"><p class="history-subject">' + r.agent_name + '</p></div>' +
+          '<div class="history-main"><p class="history-subject">' + escapeHtml(r.agent_name) + '</p></div>' +
           '<div class="history-meta">' +
-            '<span class="history-chip">' + r.open_count + ' open</span>' +
-            '<span class="history-chip">' + r.resolved_count + ' resolved</span>' +
+            '<span class="history-chip">' + escapeHtml(r.open_count) + ' open</span>' +
+            '<span class="history-chip">' + escapeHtml(r.resolved_count) + ' resolved</span>' +
           '</div>';
         listEl.appendChild(row);
       });

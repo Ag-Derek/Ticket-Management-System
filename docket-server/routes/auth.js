@@ -103,7 +103,7 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    const ok = bcrypt.compareSync(password, cred.password_hash);
+    const ok = await bcrypt.compare(String(password), cred.password_hash);
     if (!ok) {
       recordAuditLog({
         actorType: owner.ownerType,
@@ -141,7 +141,9 @@ router.post('/login', async (req, res) => {
 });
 
 // Finds the account a verified challenge belongs to — or, for a first-time
-// user/agent sign-in, creates it now that the email is proven. Returns
+// customer sign-up, creates it now that the email is proven. Agents and
+// admins are never created here: agents are invite-only (an admin adds
+// them), so their challenges always carry an owner_id. Returns
 // { record, created }.
 async function resolveChallengeOwner(challenge) {
   const table = OWNER_TABLES.find((t) => t.ownerType === challenge.owner_type).table;
@@ -152,43 +154,23 @@ async function resolveChallengeOwner(challenge) {
   }
 
   const pending = challenge.context.pending;
-  if (!pending || table === 'admins') return { record: null, created: false };
+  if (!pending || table !== 'users') return { record: null, created: false };
 
   // Two sign-ups for the same new email can both reach here; the second one
   // just picks up the row the first created.
-  const existing = await db.query(`SELECT * FROM ${table} WHERE email = $1`, [challenge.email]);
+  const existing = await db.query('SELECT * FROM users WHERE email = $1', [challenge.email]);
   if (existing.rows[0]) return { record: existing.rows[0], created: false };
 
-  let inserted;
-  if (table === 'users') {
-    const id = await nextId(db, 'users', 'USR');
-    inserted = await db.query(
-      `INSERT INTO users (id, full_name, email, phone, department, organization)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (email) DO NOTHING RETURNING *`,
-      [id, pending.full_name, challenge.email, pending.phone || null, pending.department || null, pending.organization || null]
-    );
-  } else {
-    const id = await nextId(db, 'agents', 'AGT');
-    inserted = await db.query(
-      `INSERT INTO agents (id, full_name, email, created_by) VALUES ($1, $2, $3, 'self-signup')
-       ON CONFLICT (email) DO NOTHING RETURNING *`,
-      [id, pending.full_name, challenge.email]
-    );
-    if (inserted.rows[0]) {
-      recordAuditLog({
-        actorType: 'agent',
-        actorName: pending.full_name,
-        action: 'agent.created',
-        entityType: 'agent',
-        entityId: inserted.rows[0].id,
-        details: { email: challenge.email, created_by: 'self-signup' }
-      });
-    }
-  }
+  const id = await nextId(db, 'users', 'USR');
+  const inserted = await db.query(
+    `INSERT INTO users (id, full_name, email, phone, department, organization)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT (email) DO NOTHING RETURNING *`,
+    [id, pending.full_name, challenge.email, pending.phone || null, pending.department || null, pending.organization || null]
+  );
 
   if (inserted.rows[0]) return { record: inserted.rows[0], created: true };
-  const raced = await db.query(`SELECT * FROM ${table} WHERE email = $1`, [challenge.email]);
+  const raced = await db.query('SELECT * FROM users WHERE email = $1', [challenge.email]);
   return { record: raced.rows[0], created: false };
 }
 

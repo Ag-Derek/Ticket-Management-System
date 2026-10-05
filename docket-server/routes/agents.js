@@ -11,9 +11,13 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const VALID_CREATED_BY = ['seed', 'self-signup', 'admin'];
 
 // GET /api/agents
-router.get('/', async (req, res) => {
+// Any signed-in actor: the portal, agent console and admin console all map
+// assigned_agent_id to a display name from this list. Only admins get the
+// full rows (email, created_by) — everyone else just needs id + name.
+router.get('/', requireAuth(), async (req, res) => {
   try {
-    const result = await db.query('SELECT * FROM agents ORDER BY full_name ASC');
+    const columns = req.actor.role === 'admin' ? '*' : 'id, full_name';
+    const result = await db.query(`SELECT ${columns} FROM agents ORDER BY full_name ASC`);
     res.json(result.rows);
   } catch (err) {
     console.error('GET /api/agents error:', err);
@@ -21,8 +25,8 @@ router.get('/', async (req, res) => {
   }
 });
 
-// GET /api/agents/:id
-router.get('/:id', async (req, res) => {
+// GET /api/agents/:id — admin-only
+router.get('/:id', requireAuth(['admin']), async (req, res) => {
   try {
     const result = await db.query('SELECT * FROM agents WHERE id = $1', [req.params.id]);
     if (!result.rows[0]) return res.status(404).json({ error: 'not found' });
@@ -35,10 +39,12 @@ router.get('/:id', async (req, res) => {
 
 // POST /api/agents
 // Two real callers with different rules, same endpoint:
-//  1. Agent self-sign-in (agent-login.html) — agents have no password, so
-//     the emailed MFA code is the credential. Responds
-//     { mfaRequired, challengeId }; the token (and, for a new email, the
-//     agent row itself) comes from POST /api/auth/mfa/verify.
+//  1. Agent sign-in (agent-login.html) — agents have no password, so the
+//     emailed MFA code is the credential. Responds
+//     { mfaRequired, challengeId }; the token comes from
+//     POST /api/auth/mfa/verify. Agents are invite-only: an email the admin
+//     hasn't added gets a 404 and no code, so nobody can make themselves
+//     an agent (and land in the assignment dropdown) just by signing in.
 //  2. Admin "add an agent" (admin-dashboard.html) — created_by: 'admin',
 //     requires an admin token, and a duplicate email is a hard error. No
 //     token is returned: the new agent signs in themselves, via MFA.
@@ -46,15 +52,16 @@ router.post('/', async (req, res) => {
   const { full_name, email, created_by } = req.body || {};
   const createdBy = VALID_CREATED_BY.includes(created_by) ? created_by : 'self-signup';
 
+  let adminPayload = null;
   if (createdBy !== 'self-signup') {
     const header = req.headers.authorization || '';
-    const payload = verifyToken(header.startsWith('Bearer ') ? header.slice(7) : null);
-    if (!payload || payload.ownerType !== 'admin') {
+    adminPayload = verifyToken(header.startsWith('Bearer ') ? header.slice(7) : null);
+    if (!adminPayload || adminPayload.ownerType !== 'admin') {
       return res.status(403).json({ error: 'Only an admin can add agents' });
     }
   }
 
-  if (!full_name || !full_name.trim()) {
+  if (createdBy !== 'self-signup' && (!full_name || !full_name.trim())) {
     return res.status(400).json({ error: 'full_name is required' });
   }
   if (!email || !EMAIL_RE.test(email.trim())) {
@@ -68,21 +75,22 @@ router.post('/', async (req, res) => {
     const existing = existingResult.rows[0];
 
     if (createdBy === 'self-signup') {
-      const challenge = existing
-        ? await createChallenge({ ownerType: 'agent', ownerId: existing.id, email: normalizedEmail, fullName: existing.full_name })
-        : await createChallenge({
-            ownerType: 'agent',
-            email: normalizedEmail,
-            fullName: full_name.trim(),
-            context: { pending: { full_name: full_name.trim() } }
-          });
+      if (!existing) {
+        return res.status(404).json({
+          error: "There's no agent account for this email. Ask an administrator to add you."
+        });
+      }
+
+      const challenge = await createChallenge({
+        ownerType: 'agent', ownerId: existing.id, email: normalizedEmail, fullName: existing.full_name
+      });
 
       recordAuditLog({
         actorType: 'agent',
-        actorId: existing ? existing.id : null,
-        actorName: existing ? existing.full_name : full_name.trim(),
+        actorId: existing.id,
+        actorName: existing.full_name,
         action: 'auth.mfa_sent',
-        details: { email: normalizedEmail, new_account: !existing }
+        details: { email: normalizedEmail, new_account: false }
       });
 
       return res.json(challenge);
@@ -98,9 +106,11 @@ router.post('/', async (req, res) => {
       [id, full_name.trim(), normalizedEmail, createdBy]
     );
 
+    const adminActor = { role: 'admin', id: adminPayload.ownerId };
     recordAuditLog({
       actorType: 'admin',
-      actorName: 'Admin console',
+      actorId: adminActor.id,
+      actorName: await resolveActorName(adminActor),
       action: 'agent.created',
       entityType: 'agent',
       entityId: id,
@@ -115,8 +125,9 @@ router.post('/', async (req, res) => {
   }
 });
 
-// GET /api/agents/:id/tickets — tickets currently assigned to this agent
-router.get('/:id/tickets', async (req, res) => {
+// GET /api/agents/:id/tickets — tickets currently assigned to this agent.
+// Admin-only (an agent's own queue comes from GET /api/tickets instead).
+router.get('/:id/tickets', requireAuth(['admin']), async (req, res) => {
   try {
     const agentResult = await db.query('SELECT id FROM agents WHERE id = $1', [req.params.id]);
     if (!agentResult.rows[0]) return res.status(404).json({ error: 'not found' });

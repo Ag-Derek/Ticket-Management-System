@@ -10,10 +10,12 @@ const bcrypt = require('bcryptjs');
 const db = require('./connection');
 
 async function seedAdmin() {
-  // The old front end checked this password in plaintext client-side JS,
-  // which only ever worked as a demo. Here it's hashed at rest and
-  // verified with a real bcrypt.compare() in the login route.
-  const passwordHash = bcrypt.hashSync('Admin2026!', 10);
+  // The initial password comes from ADMIN_PASSWORD, never from source —
+  // this repo is on GitHub, so anything hardcoded here is public. It's only
+  // used to create the credentials row the first time; after that the row
+  // is left alone (ON CONFLICT DO NOTHING below), so changing the password
+  // through the reset flow sticks across restarts.
+  const initialPassword = process.env.ADMIN_PASSWORD;
   const adminId = 'ADM-2026-000001';
   // Must be a mailbox someone can read: the login MFA code and password
   // reset links are sent here.
@@ -30,12 +32,25 @@ async function seedAdmin() {
   // Credentials live in auth_credentials, not on admins directly — see
   // db/schema.sql. ON CONFLICT against the (owner_type, owner_id) unique
   // constraint keeps this safe to re-run.
-  await db.query(
-    `INSERT INTO auth_credentials (owner_type, owner_id, auth_provider, password_hash)
-     VALUES ('admin', $1, 'local', $2)
-     ON CONFLICT (owner_type, owner_id) DO NOTHING`,
-    [adminId, passwordHash]
-  );
+  if (initialPassword) {
+    if (initialPassword.length < 12) {
+      throw new Error('ADMIN_PASSWORD must be at least 12 characters');
+    }
+    await db.query(
+      `INSERT INTO auth_credentials (owner_type, owner_id, auth_provider, password_hash)
+       VALUES ('admin', $1, 'local', $2)
+       ON CONFLICT (owner_type, owner_id) DO NOTHING`,
+      [adminId, await bcrypt.hash(initialPassword, 10)]
+    );
+  } else {
+    const existing = await db.query(
+      `SELECT 1 FROM auth_credentials WHERE owner_type = 'admin' AND owner_id = $1`,
+      [adminId]
+    );
+    if (!existing.rows[0]) {
+      console.warn('ADMIN_PASSWORD is not set and the admin has no password yet — admin sign-in will fail until it is.');
+    }
+  }
 
   console.log(`Seeded admin account ${adminEmail} (or confirmed it already exists).`);
 }

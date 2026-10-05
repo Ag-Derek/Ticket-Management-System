@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS auth_credentials (
 );
 
 -- One row per emailed sign-in code (email MFA, required for every actor
--- type). Only an HMAC of the 5-digit code is stored, never the code
+-- type). Only an HMAC of the 6-digit code is stored, never the code
 -- itself. owner_id is null for a first-time user/agent sign-in: the
 -- profile they submitted waits in context.pending and the users/agents row
 -- is only created once they prove they own the email, so nobody can
@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS mfa_challenges (
 );
 
 -- One row per emailed password-reset link. Only a SHA-256 of the link's
--- token is stored — the token is 256 random bits, so (unlike the 5-digit
+-- token is stored — the token is 256 random bits, so (unlike the 6-digit
 -- MFA code) it needs no HMAC secret or attempt counter to be unguessable.
 -- Only accounts with local credentials (a password) can have one.
 CREATE TABLE IF NOT EXISTS password_reset_tokens (

@@ -2,11 +2,65 @@ require('dotenv').config();
 
 const express = require('express');
 const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 const db = require('./db/connection');
 const { seed } = require('./db/seed');
 
 const app = express();
-app.use(cors());
+
+// Render terminates TLS in one proxy hop in front of us. Trusting exactly
+// one hop makes req.ip the real client address (so the rate limits below
+// are per visitor, not one shared bucket for the proxy) without letting a
+// caller spoof it with their own X-Forwarded-For header.
+app.set('trust proxy', 1);
+
+// Only the frontend may call the API from a browser. Allowed origins come
+// from CORS_ORIGINS (comma-separated), else APP_URL's origin; localhost is
+// always allowed for local dev. With neither configured we fall back to
+// allowing any origin, loudly, rather than breaking a deploy.
+const allowedOrigins = (process.env.CORS_ORIGINS || process.env.APP_URL || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
+  .map((s) => { try { return new URL(s).origin; } catch { return null; } })
+  .filter(Boolean);
+const LOCALHOST_RE = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
+
+if (!allowedOrigins.length) {
+  console.warn('CORS_ORIGINS/APP_URL not set — the API accepts browser requests from any origin.');
+}
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || !allowedOrigins.length || allowedOrigins.includes(origin) || LOCALHOST_RE.test(origin)) {
+      return callback(null, true);
+    }
+    callback(null, false);
+  }
+}));
+
+// Attachments are served with whatever MIME type the uploader claimed —
+// stop browsers from second-guessing that into something executable.
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  next();
+});
+
+// Per-IP limit on everything that sends a sign-in code, checks a password
+// or code, or starts a password reset. The per-account limits in
+// utils/mfa.js and utils/password-reset.js stop guessing against one
+// account; this stops one client hammering many accounts (or the email
+// quota). Generous enough for an office of people behind one NAT address.
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 60,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Too many sign-in attempts from this network. Please wait a few minutes and try again.' }
+});
+app.use('/api/auth', authLimiter);
+app.post('/api/users', authLimiter);
+app.post('/api/users/sign-in', authLimiter);
+app.post('/api/agents', authLimiter);
 // Attachments travel as base64 inline in the JSON body (see
 // attachment-storage.js's 5MB-per-file cap) — base64 inflates that by
 // ~33%, and a ticket/comment can carry more than one file, so the
@@ -37,23 +91,11 @@ app.get('/', (req, res) => {
 });
 
 // Health check — confirms the server is up and the database is reachable.
+// Public, so it deliberately reports nothing about what's in the database.
 app.get('/api/health', async (req, res) => {
   try {
-    const [users, agents, admins, tickets] = await Promise.all([
-      db.query('SELECT COUNT(*) AS n FROM users'),
-      db.query('SELECT COUNT(*) AS n FROM agents'),
-      db.query('SELECT COUNT(*) AS n FROM admins'),
-      db.query('SELECT COUNT(*) AS n FROM tickets')
-    ]);
-    res.json({
-      status: 'ok',
-      counts: {
-        users: Number(users.rows[0].n),
-        agents: Number(agents.rows[0].n),
-        admins: Number(admins.rows[0].n),
-        tickets: Number(tickets.rows[0].n)
-      }
-    });
+    await db.query('SELECT 1');
+    res.json({ status: 'ok' });
   } catch (err) {
     console.error('GET /api/health error:', err);
     res.status(500).json({ status: 'error', error: 'database unreachable' });
