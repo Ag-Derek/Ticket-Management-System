@@ -881,6 +881,53 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   }
 
+  // ---- Unread badges (WhatsApp-style) ----
+  // The notification poll below gets { total, tickets: { id: n } } back with
+  // every response (customers and assigned agents only — see
+  // utils/unread.js). applyUnreadBadges() paints it onto whatever is on the
+  // page: a count bubble on each ticket row (rows already carry
+  // data-ticket-id) and on the "Message support" / "Message customer"
+  // button, plus "(3) " in the tab title. The queue renderers call it after
+  // each re-render so the badges survive the 4s refresh.
+  var unreadState = { total: 0, tickets: {} };
+  var unreadOpenChatTicket = window.location.pathname.split('/').pop() === 'ticket-chat.html'
+    ? new URLSearchParams(window.location.search).get('ticket')
+    : null;
+  var baseDocumentTitle = document.title;
+
+  function setUnreadBadge(container, n, prepend) {
+    if (!container) return;
+    var badge = container.querySelector(':scope > .unread-badge');
+    if (!n) { if (badge) badge.remove(); return; }
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'unread-badge';
+      if (prepend) container.insertBefore(badge, container.firstChild);
+      else container.appendChild(badge);
+    }
+    badge.textContent = n > 99 ? '99+' : String(n);
+    badge.setAttribute('aria-label', n + ' unread message' + (n === 1 ? '' : 's'));
+  }
+
+  function applyUnreadBadges() {
+    var counts = unreadState.tickets || {};
+    document.querySelectorAll('.history-row[data-ticket-id]').forEach(function (row) {
+      var n = counts[row.dataset.ticketId] || 0;
+      row.classList.toggle('has-unread', n > 0);
+      setUnreadBadge(row.querySelector('.history-meta') || row, n, true);
+    });
+    ['messageAgentBtn', 'messageCustomerBtn'].forEach(function (id) {
+      var btn = document.getElementById(id);
+      if (!btn) return;
+      var href = btn.getAttribute('href') || '';
+      var match = href.match(/[?&]ticket=([^&]+)/);
+      setUnreadBadge(btn, match ? counts[decodeURIComponent(match[1])] || 0 : 0, false);
+    });
+    // The conversation open in the chat page is being read right now.
+    var total = unreadState.total - (unreadOpenChatTicket ? counts[unreadOpenChatTicket] || 0 : 0);
+    document.title = total > 0 ? '(' + (total > 99 ? '99+' : total) + ') ' + baseDocumentTitle : baseDocumentTitle;
+  }
+
   // ---- New-message pop-ups (customer portal, agent/admin consoles, chat) ----
   // Polls GET /api/notifications/messages for messages someone else posted
   // on a ticket this actor can see, and shows each as a toast linking to
@@ -1018,6 +1065,10 @@ document.addEventListener('DOMContentLoaded', function () {
           (data.messages || []).forEach(function (m) {
             if (m.ticket_id !== openChatTicket) showToast(m);
           });
+          if (data.unread) {
+            unreadState = data.unread;
+            applyUnreadBadges();
+          }
           cursor = String(data.latest_id);
           try { localStorage.setItem(cursorKey, cursor); } catch (e) { /* cursor just won't persist */ }
         })
@@ -1643,6 +1694,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
       var messageAgentBtn = document.getElementById('messageAgentBtn');
       if (messageAgentBtn) messageAgentBtn.setAttribute('href', 'ticket-chat.html?ticket=' + encodeURIComponent(t.id) + '&role=customer');
+      applyUnreadBadges();
 
       // Confirm fix / reopen only apply while a ticket is sitting in "Resolved",
       // waiting on the customer to say whether the fix actually worked.
@@ -1854,6 +1906,7 @@ document.addEventListener('DOMContentLoaded', function () {
         });
         historyListEl.appendChild(row);
       });
+      applyUnreadBadges();
     }
 
     if (portalQueueSearchInput) {
@@ -2415,6 +2468,7 @@ document.addEventListener('DOMContentLoaded', function () {
       reassignBtn.textContent = t.assignedAgentId ? 'Reassign…' : 'Assign to…';
       renderStatusActions(t);
       document.getElementById('messageCustomerBtn').setAttribute('href', 'ticket-chat.html?ticket=' + encodeURIComponent(t.id) + '&role=agent');
+      applyUnreadBadges();
 
       // Surface whether the customer has confirmed the fix or reopened the ticket.
       var resBanner = document.getElementById('dashResolutionBanner');
@@ -2531,6 +2585,7 @@ document.addEventListener('DOMContentLoaded', function () {
         });
         listEl.appendChild(row);
       });
+      applyUnreadBadges();
     }
 
     document.getElementById('assignToMeBtn').addEventListener('click', function () {
@@ -2902,6 +2957,7 @@ document.addEventListener('DOMContentLoaded', function () {
       });
 
       renderChatMessages();
+      markChatRead();
     }
 
     // GET /api/tickets/:id — a 404 (or a bad ?ticket= param) falls through to
@@ -2928,6 +2984,28 @@ document.addEventListener('DOMContentLoaded', function () {
         initChat();
       });
 
+    // Read receipts for the unread badges / email reminders: whatever is on
+    // screen counts as read, but only while the tab is actually visible — a
+    // chat left open in a background tab shouldn't swallow new messages.
+    var chatLastMarkedId = 0;
+    function markChatRead() {
+      if (!chatTicket || document.hidden) return;
+      var maxId = chatMessages.reduce(function (max, m) { return m.id > max ? m.id : max; }, 0);
+      if (maxId <= chatLastMarkedId) return;
+      chatLastMarkedId = maxId;
+      fetch(API_BASE + '/api/tickets/' + encodeURIComponent(chatTicket.id) + '/comments/read', {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+        body: JSON.stringify({ up_to_id: maxId })
+      })
+        .then(function (response) { if (!response.ok) throw new Error('mark read failed (' + response.status + ')'); })
+        .catch(function (err) {
+          chatLastMarkedId = 0; // try again on the next poll
+          console.error('Chat read receipt:', err);
+        });
+    }
+    document.addEventListener('visibilitychange', markChatRead);
+
     // Live updates: the other side of this conversation (customer vs. agent/
     // admin) is very likely on a different device entirely, so — same
     // pattern as the ticket queues — poll for new comments rather than
@@ -2939,6 +3017,7 @@ document.addEventListener('DOMContentLoaded', function () {
           chatMessages = comments;
           renderChatMessages();
         }
+        markChatRead();
       });
     }, 4000);
   }

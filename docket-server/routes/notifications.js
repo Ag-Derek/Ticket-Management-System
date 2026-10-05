@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../db/connection');
 const { requireAuth } = require('../middleware/authenticate');
 const { asyncHandler } = require('../utils/async-handler');
+const { unreadCounts } = require('../utils/unread');
 
 const router = express.Router();
 
@@ -17,6 +18,10 @@ const MAX_MESSAGES = 20;
 // With no after_id this returns no messages, only the current latest_id:
 // the first poll on a page sets the cursor instead of replaying history.
 //
+// Every response also carries `unread` ({ total, tickets: { id: n } }, see
+// utils/unread.js) so the same poll drives the unread badges — no second
+// request per page.
+//
 // Visibility follows the same rules as the chat itself: a customer sees
 // public messages on their own tickets, an agent sees everything on tickets
 // assigned to them, an admin sees everything.
@@ -26,7 +31,7 @@ router.get('/messages', requireAuth(), asyncHandler(async (req, res) => {
 
   if (!Number.isInteger(afterId) || afterId < 0) {
     const latest = await db.query('SELECT COALESCE(MAX(id), 0) AS id FROM ticket_comments');
-    return res.json({ latest_id: Number(latest.rows[0].id), messages: [] });
+    return res.json({ latest_id: Number(latest.rows[0].id), messages: [], unread: await unreadCounts(req.actor) });
   }
 
   // Read the ceiling first and only look up to it, so a message posted
@@ -61,7 +66,7 @@ router.get('/messages', requireAuth(), asyncHandler(async (req, res) => {
     ? messages[messages.length - 1].id
     : Math.max(afterId, ceiling);
 
-  res.json({ latest_id: latestId, messages });
+  res.json({ latest_id: latestId, messages, unread: await unreadCounts(req.actor) });
 }));
 
 module.exports = router;

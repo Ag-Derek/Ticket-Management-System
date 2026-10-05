@@ -149,6 +149,36 @@ CREATE TABLE IF NOT EXISTS ticket_comments (
 -- the author's own messages. Null on comments posted before it existed.
 ALTER TABLE ticket_comments ADD COLUMN IF NOT EXISTS author_id TEXT;
 
+-- How far each participant has read each ticket's conversation — powers the
+-- unread badges and the "you have unread messages" email reminder (see
+-- utils/message-reminders.js). reader_type uses the comments' naming
+-- (customer | agent | admin). Comment ids only grow, so "read up to id N"
+-- is all that's needed. last_reminded_comment_id stops the same unread
+-- batch from being emailed twice.
+CREATE TABLE IF NOT EXISTS ticket_reads (
+  ticket_id                 TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+  reader_type               TEXT NOT NULL,
+  reader_id                 TEXT NOT NULL,
+  last_read_comment_id      INTEGER NOT NULL DEFAULT 0,
+  last_read_at              TIMESTAMPTZ,
+  last_reminded_comment_id  INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (ticket_id, reader_type, reader_id),
+  CHECK (reader_type IN ('customer', 'agent', 'admin'))
+);
+
+-- Small key/value store for one-off app state.
+CREATE TABLE IF NOT EXISTS app_settings (
+  key    TEXT PRIMARY KEY,
+  value  TEXT NOT NULL
+);
+
+-- Everything posted before unread tracking existed counts as already read,
+-- so the first deploy doesn't light up every old conversation or email
+-- reminders about months-old messages. Set once; never moves after that.
+INSERT INTO app_settings (key, value)
+SELECT 'unread_tracking_after_comment_id', COALESCE(MAX(id), 0)::text FROM ticket_comments
+ON CONFLICT (key) DO NOTHING;
+
 -- An attachment belongs to exactly one of: a ticket (attached directly,
 -- e.g. at creation) or a comment (attached to a specific reply). It can
 -- never belong to neither, and never to both — the CHECK below enforces
@@ -201,6 +231,7 @@ CREATE INDEX IF NOT EXISTS idx_tickets_user ON tickets(user_id);
 CREATE INDEX IF NOT EXISTS idx_tickets_agent ON tickets(assigned_agent_id);
 CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);
 CREATE INDEX IF NOT EXISTS idx_comments_ticket ON ticket_comments(ticket_id);
+CREATE INDEX IF NOT EXISTS idx_ticket_reads_reader ON ticket_reads(reader_type, reader_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_ticket ON ticket_attachments(ticket_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_comment ON ticket_attachments(comment_id);
 CREATE INDEX IF NOT EXISTS idx_auth_owner ON auth_credentials(owner_type, owner_id);

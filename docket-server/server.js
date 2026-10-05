@@ -132,6 +132,7 @@ async function start() {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Docket API listening on http://localhost:${PORT}`);
   });
+  require('./utils/message-reminders').startMessageReminders();
 }
 
 start().catch((err) => {

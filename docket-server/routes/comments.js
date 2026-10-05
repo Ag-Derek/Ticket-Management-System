@@ -4,6 +4,7 @@ const { saveAttachmentFile, removeAttachmentFiles, uploadAllOrNone } = require('
 const { requireAuth } = require('../middleware/authenticate');
 const { requireTicketAccess } = require('../middleware/authorize');
 const { asyncHandler } = require('../utils/async-handler');
+const { markRead } = require('../utils/unread');
 
 // mergeParams so this router can read :ticketId from the parent
 // tickets router it's mounted under (see server.js).
@@ -150,6 +151,8 @@ router.post('/', requireAuth(), requireTicketAccess(TICKET_ACCESS), asyncHandler
       }
 
       await client.query(`UPDATE tickets SET updated_at = now() WHERE id = $1`, [req.params.ticketId]);
+      // Replying means you've seen the conversation up to here.
+      await markRead(req.params.ticketId, authorType, req.actor.id, newCommentId, client);
       return newCommentId;
     });
   } catch (err) {
@@ -163,6 +166,17 @@ router.post('/', requireAuth(), requireTicketAccess(TICKET_ACCESS), asyncHandler
   const createdResult = await db.query('SELECT * FROM ticket_comments WHERE id = $1', [commentId]);
   const createdFilesResult = await db.query('SELECT id, filename FROM ticket_attachments WHERE comment_id = $1', [commentId]);
   res.status(201).json({ ...createdResult.rows[0], files: createdFilesResult.rows });
+}));
+
+// POST /api/tickets/:ticketId/comments/read  { up_to_id? }
+// Called by the chat page while the conversation is on screen. Marks
+// everything up to up_to_id (default: the newest message) as read for the
+// caller, which clears their unread badge and cancels any pending email
+// reminder for those messages.
+router.post('/read', requireAuth(), requireTicketAccess(TICKET_ACCESS), asyncHandler(async (req, res) => {
+  const upToId = Number((req.body || {}).up_to_id);
+  await markRead(req.params.ticketId, ROLE_TO_AUTHOR_TYPE[req.actor.role], req.actor.id, Number.isInteger(upToId) ? upToId : null);
+  res.status(204).end();
 }));
 
 module.exports = router;

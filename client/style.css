@@ -102,6 +102,20 @@ a.topbar-cta:hover{background:var(--ink);color:#fff;}
 @keyframes toast-in{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:none;}}
 @media (max-width:480px){.toast-stack{right:16px;left:16px;bottom:16px;width:auto;}}
 
+/* ---- Unread message badges (WhatsApp-style count bubbles) ---- */
+.unread-badge{
+  display:inline-flex;align-items:center;justify-content:center;
+  min-width:20px;height:20px;padding:0 6px;border-radius:999px;
+  background:#138A3E;color:#fff;font-size:11.5px;font-weight:700;line-height:1;
+  font-variant-numeric:tabular-nums;
+}
+.btn-ghost .unread-badge{margin-left:8px;vertical-align:1px;}
+.btn-ghost:hover .unread-badge{background:#fff;color:#138A3E;}
+.history-row.has-unread{border-color:#138A3E;}
+.history-row.has-unread .history-subject{font-weight:800;}
+/* Unread conversations stay readable on rows that are otherwise faded. */
+.history-row.has-unread.status-resolved,.history-row.has-unread.status-closed{opacity:1;}
+
 .btn-danger{border-color:#B14A1F;color:#B14A1F;}
 .btn-danger:hover{background:#B14A1F;color:#fff;}
 .btn-danger.btn-small{padding:5px 12px;font-size:11.5px;}
