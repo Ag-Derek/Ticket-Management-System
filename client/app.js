@@ -815,8 +815,126 @@ document.addEventListener('DOMContentLoaded', function () {
       // it; the render sites below omit the attribution when it's empty.
       resolutionSummary: row.resolution_summary ? { text: row.resolution_summary, by: '' } : null,
       escalation: row.escalated_to ? { to: row.escalated_to, reason: row.escalation_reason || '', by: '' } : null,
-      csat: row.csat_rating != null ? { score: row.csat_rating, comment: row.csat_comment || '' } : null
+      csat: row.csat_rating != null ? { score: row.csat_rating, comment: row.csat_comment || '' } : null,
+      // SLA clock — the server sets these; see docket-server/utils/sla.js.
+      responseDueAt: row.first_response_due_at || null,
+      resolutionDueAt: row.resolution_due_at || null,
+      firstRespondedAt: row.first_responded_at || null,
+      resolvedAt: row.resolved_at || null,
+      slaPausedAt: row.sla_paused_at || null
     };
+  }
+
+  // What the agent/admin queue polls compare to decide whether a ticket
+  // changed enough to re-render. firstRespondedAt is in here so a reply sent
+  // from another tab clears the "response due" warning without a reload.
+  function ticketSignature(t) {
+    return t.status + '|' + (t.assignedAgent || '') + '|' + (t.firstRespondedAt || '');
+  }
+
+  // ---- SLA tracking ----
+  // The server stores absolute due times and pauses/resumes the resolution
+  // clock (docket-server/utils/sla.js); this only compares them to the
+  // current time. Each clock comes back as one of:
+  //   met | breached   — final outcome
+  //   pending          — running, plenty of time left
+  //   due-soon         — running, under a quarter of the window left
+  //   paused           — resolution clock while waiting on the customer
+  // or null for a ticket with no SLA data.
+  var SLA_DUE_SOON_FRACTION = 0.25;
+
+  function slaTime(v) { return v ? new Date(v).getTime() : null; }
+
+  function runningClock(due, start, now) {
+    if (now > due) return 'breached';
+    return (due - now) < (due - start) * SLA_DUE_SOON_FRACTION ? 'due-soon' : 'pending';
+  }
+
+  function slaInfo(t, now) {
+    now = now || Date.now();
+    var created = slaTime(t.createdAt);
+    var responseDue = slaTime(t.responseDueAt);
+    var resolutionDue = slaTime(t.resolutionDueAt);
+    var info = { response: null, resolution: null, responseDue: responseDue, resolutionDue: null };
+
+    if (responseDue) {
+      var responded = slaTime(t.firstRespondedAt);
+      info.response = responded
+        ? (responded <= responseDue ? 'met' : 'breached')
+        : runningClock(responseDue, created, now);
+    }
+
+    if (resolutionDue) {
+      var resolved = slaTime(t.resolvedAt);
+      var paused = slaTime(t.slaPausedAt);
+      // While paused, the due time slides forward with the clock, so the
+      // ticket can't breach while it's waiting on the customer.
+      var effectiveDue = paused ? resolutionDue + (now - paused) : resolutionDue;
+      info.resolutionDue = effectiveDue;
+      if (resolved && (t.status === 'Resolved' || t.status === 'Closed')) {
+        info.resolution = resolved <= resolutionDue ? 'met' : 'breached';
+      } else if (now > effectiveDue) {
+        info.resolution = 'breached';
+      } else {
+        info.resolution = paused ? 'paused' : runningClock(effectiveDue, created, now);
+      }
+    }
+    return info;
+  }
+
+  // "in 2h 5m" / "3d 4h ago" relative to now.
+  function fmtSlaRelative(ms, now) {
+    var diff = ms - now;
+    var mins = Math.round(Math.abs(diff) / 60000);
+    var text;
+    if (mins < 60) text = mins + 'm';
+    else if (mins < 24 * 60) text = Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm';
+    else text = Math.floor(mins / 1440) + 'd ' + Math.floor((mins % 1440) / 60) + 'h';
+    return diff >= 0 ? 'in ' + text : text + ' ago';
+  }
+
+  // The single most urgent SLA warning for an open ticket, for its queue
+  // row and the "SLA breached" stat: { level: 'breached'|'due-soon', text },
+  // or null when nothing needs attention. A response that was late but has
+  // since been sent isn't actionable any more, so it doesn't show here.
+  function slaAlert(t, now) {
+    if (t.status === 'Resolved' || t.status === 'Closed') return null;
+    now = now || Date.now();
+    var s = slaInfo(t, now);
+    var responseOpen = !t.firstRespondedAt;
+    if (s.resolution === 'breached') return { level: 'breached', text: 'SLA breached' };
+    if (responseOpen && s.response === 'breached') return { level: 'breached', text: 'Response overdue' };
+    if (responseOpen && s.response === 'due-soon') return { level: 'due-soon', text: 'Reply due ' + fmtSlaRelative(s.responseDue, now) };
+    if (s.resolution === 'due-soon') return { level: 'due-soon', text: 'Due ' + fmtSlaRelative(s.resolutionDue, now) };
+    return null;
+  }
+
+  function slaAlertChipHtml(t, now) {
+    var alertInfo = slaAlert(t, now);
+    if (!alertInfo) return '';
+    return '<span class="history-chip sla-chip sla-' + alertInfo.level + '">' + escapeHtml(alertInfo.text) + '</span>';
+  }
+
+  // Fills a ticket detail's SLA box: the targets, then one line per clock.
+  function renderSlaBox(el, t) {
+    if (!el) return;
+    var now = Date.now();
+    var s = slaInfo(t, now);
+    if (!s.response && !s.resolution) { el.textContent = t.sla || '—'; return; }
+
+    function line(label, state, due) {
+      var text;
+      if (state === 'met') text = 'met';
+      else if (state === 'breached') text = 'breached' + (due && t.status !== 'Resolved' && t.status !== 'Closed' ? ' (due ' + fmtSlaRelative(due, now) + ')' : '');
+      else if (state === 'paused') text = 'paused, waiting on customer';
+      else text = 'due ' + fmtSlaRelative(due, now);
+      return '<span class="sla-line sla-' + (state || 'pending') + '">' + label + ': ' + escapeHtml(text) + '</span>';
+    }
+
+    el.innerHTML =
+      '<span class="sla-targets">' + escapeHtml(t.sla || '') + '</span>' +
+      (s.response ? line('Response', s.response, s.responseDue) : '') +
+      (s.resolution ? line('Resolution', s.resolution, s.resolutionDue) : '');
   }
 
   // PATCH /api/tickets/:id/assign — pass a falsy agentId to send the ticket
@@ -2254,7 +2372,7 @@ document.addEventListener('DOMContentLoaded', function () {
       if (!canTransition(t.status, toStatus)) return;
       changeTicketStatus(t.id, { status: toStatus }, function (updated) {
         replaceTicketIn(tickets, updated);
-        agentKnownSignature[updated.id] = updated.status + '|' + (updated.assignedAgent || '');
+        agentKnownSignature[updated.id] = ticketSignature(updated);
         renderStats(); renderDetail(); renderList();
       }, function (err) {
         alert(err.message || 'Unable to update the ticket status.');
@@ -2438,7 +2556,7 @@ document.addEventListener('DOMContentLoaded', function () {
       assignTicket(t.id, toId, function (updated) {
         confirmBtn.disabled = false;
         replaceTicketIn(tickets, updated);
-        agentKnownSignature[updated.id] = updated.status + '|' + (updated.assignedAgent || '');
+        agentKnownSignature[updated.id] = ticketSignature(updated);
         var noteText = toName
           ? (wasUnassigned ? 'Assigned to ' + toName : 'Reassigned from ' + from + ' to ' + toName)
           : 'Unassigned (was ' + from + ')';
@@ -2468,7 +2586,7 @@ document.addEventListener('DOMContentLoaded', function () {
       changeTicketStatus(t.id, { status: 'Escalated', escalated_to: toName, escalation_reason: reason, suggested_agent_id: toId }, function (updated) {
         escalateConfirmBtnEl.disabled = false;
         replaceTicketIn(tickets, updated);
-        agentKnownSignature[updated.id] = updated.status + '|' + (updated.assignedAgent || '');
+        agentKnownSignature[updated.id] = ticketSignature(updated);
         addInternalNote(updated.id, 'Escalated to ' + toName + ' — ' + reason);
         closePanels();
         renderStats(); renderDetail(); renderList();
@@ -2501,7 +2619,7 @@ document.addEventListener('DOMContentLoaded', function () {
         changeTicketStatus(t.id, { status: 'Resolved', resolution_summary: summary }, function (updated) {
           resolveConfirmBtn.disabled = false;
           replaceTicketIn(tickets, updated);
-          agentKnownSignature[updated.id] = updated.status + '|' + (updated.assignedAgent || '');
+          agentKnownSignature[updated.id] = ticketSignature(updated);
           addInternalNote(updated.id, 'Marked resolved — ' + summary);
           closePanels();
           renderStats(); renderDetail(); renderList();
@@ -2519,8 +2637,12 @@ document.addEventListener('DOMContentLoaded', function () {
       var resolved = tickets.filter(function (t) { return t.status === 'Resolved' || t.status === 'Closed'; }).length;
       var mine = tickets.filter(isMine).length;
 
+      var now = Date.now();
+      var slaBreached = tickets.filter(function (t) { var a = slaAlert(t, now); return a && a.level === 'breached'; }).length;
+
       document.getElementById('statOpen').textContent = open;
       document.getElementById('statCritical').textContent = critical;
+      document.getElementById('statSlaBreached').textContent = slaBreached;
       document.getElementById('statUnassigned').textContent = unassigned;
       document.getElementById('statResolved').textContent = resolved;
       document.getElementById('agentMineCount').textContent = mine;
@@ -2543,7 +2665,7 @@ document.addEventListener('DOMContentLoaded', function () {
       document.getElementById('dashCategory').textContent = t.category;
       document.getElementById('dashPriority').textContent = t.priority;
       document.getElementById('dashTeam').textContent = t.team;
-      document.getElementById('dashSla').textContent = t.sla;
+      renderSlaBox(document.getElementById('dashSla'), t);
       document.getElementById('dashFiles').textContent = t.files ? t.files + ' attached' : 'None';
       document.getElementById('dashEmail').textContent = t.email;
       document.getElementById('dashAgent').textContent = t.assignedAgent || 'Unassigned';
@@ -2672,9 +2794,11 @@ document.addEventListener('DOMContentLoaded', function () {
         return;
       }
 
+      var now = Date.now();
       filtered.forEach(function (t) {
         var row = document.createElement('div');
-        row.className = 'history-row ' + statusClass(t.status);
+        var alertInfo = slaAlert(t, now);
+        row.className = 'history-row ' + statusClass(t.status) + (alertInfo && alertInfo.level === 'breached' ? ' sla-breached-row' : '');
         row.dataset.ticketId = t.id;
         row.tabIndex = 0;
         row.setAttribute('role', 'button');
@@ -2686,6 +2810,7 @@ document.addEventListener('DOMContentLoaded', function () {
             '<p class="history-subject">' + escapeHtml(t.subject) + '</p>' +
           '</div>' +
           '<div class="history-meta">' +
+            slaAlertChipHtml(t, now) +
             '<span class="history-chip">' + escapeHtml(t.category) + '</span>' +
             '<span class="history-chip">' + escapeHtml(t.priority) + '</span>' +
             '<span class="history-chip">' + (t.assignedAgent ? escapeHtml(t.assignedAgent) : '<span class="history-unassigned">Unassigned</span>') + '</span>' +
@@ -2709,7 +2834,7 @@ document.addEventListener('DOMContentLoaded', function () {
         replaceTicketIn(tickets, updated);
         // Keep the poll's signature in step so it doesn't re-render on top of
         // a change this tab just made.
-        agentKnownSignature[updated.id] = updated.status + '|' + (updated.assignedAgent || '');
+        agentKnownSignature[updated.id] = ticketSignature(updated);
         renderStats(); renderDetail(); renderList();
       }, function (err) {
         btn.disabled = false;
@@ -2802,7 +2927,7 @@ document.addEventListener('DOMContentLoaded', function () {
     // handling below, but keyed on status+assignedAgent (a reassignment alone
     // doesn't change status) and re-renders in place rather than toasting.
     var agentKnownSignature = {};
-    tickets.forEach(function (t) { agentKnownSignature[t.id] = t.status + '|' + (t.assignedAgent || ''); });
+    tickets.forEach(function (t) { agentKnownSignature[t.id] = ticketSignature(t); });
 
     function applyRemoteAgentUpdate(updated) {
       if (!updated) return;
@@ -2812,7 +2937,7 @@ document.addEventListener('DOMContentLoaded', function () {
       // is mid-typing in an open reassign/escalate/resolve panel.
       var changed = updated.length !== tickets.length;
       updated.forEach(function (t) {
-        var sig = t.status + '|' + (t.assignedAgent || '');
+        var sig = ticketSignature(t);
         if (agentKnownSignature[t.id] !== sig) changed = true;
         agentKnownSignature[t.id] = sig;
       });
@@ -2842,7 +2967,7 @@ document.addEventListener('DOMContentLoaded', function () {
           tickets = rows;
           selectedId = tickets.length ? tickets[0].id : null;
           tickets.forEach(function (t) {
-            agentKnownSignature[t.id] = t.status + '|' + (t.assignedAgent || '');
+            agentKnownSignature[t.id] = ticketSignature(t);
           });
           bootstrapAgentQueue();
         }, function (err) {
@@ -2863,6 +2988,17 @@ document.addEventListener('DOMContentLoaded', function () {
     setInterval(function () {
       fetchTickets(null, applyRemoteAgentUpdate);
     }, 4000);
+
+    // SLA warnings depend on the clock as well as the data, so refresh them
+    // once a minute even when the poll above sees no change. Deliberately
+    // not renderDetail(), which would close any panel mid-edit — only the
+    // SLA box in the detail view is updated.
+    setInterval(function () {
+      if (!tickets.length) return;
+      renderStats(); renderList();
+      var t = tickets.filter(function (x) { return x.id === selectedId; })[0];
+      if (t) renderSlaBox(document.getElementById('dashSla'), t);
+    }, 60000);
   }
 
   // ---- Ticket chat (ticket-chat.html): shared thread between agent and customer ----
@@ -3216,6 +3352,8 @@ document.addEventListener('DOMContentLoaded', function () {
     function renderAdminStats() {
       document.getElementById('adminStatOpen').textContent = adminTickets.filter(function (t) { return adminIsOpen(t.status); }).length;
       document.getElementById('adminStatCritical').textContent = adminTickets.filter(function (t) { return t.priority === 'Critical' && adminIsOpen(t.status); }).length;
+      var now = Date.now();
+      document.getElementById('adminStatSlaBreached').textContent = adminTickets.filter(function (t) { var a = slaAlert(t, now); return a && a.level === 'breached'; }).length;
       document.getElementById('adminStatUnassigned').textContent = adminTickets.filter(function (t) { return !t.assignedAgent && adminIsOpen(t.status); }).length;
       document.getElementById('adminStatResolved').textContent = adminTickets.filter(function (t) { return t.status === 'Resolved' || t.status === 'Closed'; }).length;
       document.getElementById('adminSidebarTicketCount').textContent = adminTickets.length;
@@ -3281,7 +3419,7 @@ document.addEventListener('DOMContentLoaded', function () {
       assignTicket(t.id, toId, function (updated) {
         confirmBtn.disabled = false;
         replaceTicketIn(adminTickets, updated);
-        adminKnownSignature[updated.id] = updated.status + '|' + (updated.assignedAgent || '');
+        adminKnownSignature[updated.id] = ticketSignature(updated);
         var noteText = toName
           ? (from === 'Unassigned' ? 'Assigned to ' + toName : 'Reassigned from ' + from + ' to ' + toName)
           : 'Unassigned (was ' + from + ')';
@@ -3336,7 +3474,7 @@ document.addEventListener('DOMContentLoaded', function () {
       document.getElementById('adminDashCategory').textContent = t.category;
       document.getElementById('adminDashPriority').textContent = t.priority;
       document.getElementById('adminDashTeam').textContent = t.team;
-      document.getElementById('adminDashSla').textContent = t.sla;
+      renderSlaBox(document.getElementById('adminDashSla'), t);
       document.getElementById('adminDashFiles').textContent = t.files ? t.files + ' attached' : 'None';
       document.getElementById('adminDashEmail').textContent = t.email;
       document.getElementById('adminDashAgent').textContent = t.assignedAgent || 'Unassigned';
@@ -3406,9 +3544,11 @@ document.addEventListener('DOMContentLoaded', function () {
         return;
       }
 
+      var now = Date.now();
       filtered.forEach(function (t) {
         var row = document.createElement('div');
-        row.className = 'history-row ' + adminStatusClass(t.status);
+        var alertInfo = slaAlert(t, now);
+        row.className = 'history-row ' + adminStatusClass(t.status) + (alertInfo && alertInfo.level === 'breached' ? ' sla-breached-row' : '');
         row.tabIndex = 0;
         row.setAttribute('role', 'button');
         row.setAttribute('aria-label', 'View details for ' + t.subject);
@@ -3419,6 +3559,7 @@ document.addEventListener('DOMContentLoaded', function () {
             '<p class="history-subject">' + escapeHtml(t.subject) + '</p>' +
           '</div>' +
           '<div class="history-meta">' +
+            slaAlertChipHtml(t, now) +
             '<span class="history-chip">' + escapeHtml(t.category) + '</span>' +
             '<span class="history-chip">' + escapeHtml(t.priority) + '</span>' +
             '<span class="history-chip">' + (t.assignedAgent ? escapeHtml(t.assignedAgent) : '<span class="history-unassigned">Unassigned</span>') + '</span>' +
@@ -3497,14 +3638,14 @@ document.addEventListener('DOMContentLoaded', function () {
     // above for the fuller rationale; kept as a separate copy here since
     // it drives a different ticket array and set of render functions.
     var adminKnownSignature = {};
-    adminTickets.forEach(function (t) { adminKnownSignature[t.id] = t.status + '|' + (t.assignedAgent || ''); });
+    adminTickets.forEach(function (t) { adminKnownSignature[t.id] = ticketSignature(t); });
 
     function applyRemoteAdminUpdate(updated) {
       if (!updated) return;
 
       var changed = updated.length !== adminTickets.length;
       updated.forEach(function (t) {
-        var sig = t.status + '|' + (t.assignedAgent || '');
+        var sig = ticketSignature(t);
         if (adminKnownSignature[t.id] !== sig) changed = true;
         adminKnownSignature[t.id] = sig;
       });
@@ -3535,7 +3676,7 @@ document.addEventListener('DOMContentLoaded', function () {
           adminTickets = rows;
           adminSelectedId = adminTickets.length ? adminTickets[0].id : null;
           adminTickets.forEach(function (t) {
-            adminKnownSignature[t.id] = t.status + '|' + (t.assignedAgent || '');
+            adminKnownSignature[t.id] = ticketSignature(t);
           });
           populateAssigneeFilter();
           bootstrapAdminConsole();
@@ -3554,6 +3695,14 @@ document.addEventListener('DOMContentLoaded', function () {
     setInterval(function () {
       fetchTickets(null, applyRemoteAdminUpdate);
     }, 4000);
+
+    // Once-a-minute SLA refresh — see the matching block in the agent queue.
+    setInterval(function () {
+      if (!adminTickets.length) return;
+      renderAdminStats(); renderAdminList();
+      var t = adminTickets.filter(function (x) { return x.id === adminSelectedId; })[0];
+      if (t) renderSlaBox(document.getElementById('adminDashSla'), t);
+    }, 60000);
 
     // ---- Tabs: Tickets / Agents / Audit Logs / Reports ----
     document.querySelectorAll('.admin-tab').forEach(function (btn) {
@@ -4042,6 +4191,35 @@ document.addEventListener('DOMContentLoaded', function () {
       });
     }
 
+    function fmtPct(p) { return p === null || p === undefined ? '—' : p + '%'; }
+
+    function renderSlaReport(sla) {
+      if (!sla) return;
+      document.getElementById('reportSlaResponse').textContent = fmtPct(sla.response.compliance_pct);
+      document.getElementById('reportSlaResolution').textContent = fmtPct(sla.resolution.compliance_pct);
+      document.getElementById('reportSlaBreached').textContent = sla.resolution.breached;
+      document.getElementById('reportSlaOpenBreached').textContent = sla.open_breached;
+
+      var listEl = document.getElementById('reportSlaByPriority');
+      listEl.innerHTML = '';
+      if (!sla.by_priority.length) {
+        listEl.innerHTML = '<p class="queue-no-results">No data for this range.</p>';
+        return;
+      }
+      sla.by_priority.forEach(function (r) {
+        var row = document.createElement('div');
+        row.className = 'history-row';
+        row.innerHTML =
+          '<div class="history-main"><p class="history-subject">' + escapeHtml(r.priority) + '</p></div>' +
+          '<div class="history-meta">' +
+            '<span class="history-chip">Response ' + escapeHtml(fmtPct(r.response_compliance_pct)) + '</span>' +
+            '<span class="history-chip">Resolution ' + escapeHtml(fmtPct(r.resolution_compliance_pct)) + '</span>' +
+            (r.resolution_breached ? '<span class="history-chip sla-chip sla-breached">' + escapeHtml(r.resolution_breached) + ' breached</span>' : '') +
+          '</div>';
+        listEl.appendChild(row);
+      });
+    }
+
     function loadReportSummary() {
       var from = document.getElementById('reportFromInput').value;
       var to = document.getElementById('reportToInput').value;
@@ -4062,6 +4240,7 @@ document.addEventListener('DOMContentLoaded', function () {
           document.getElementById('reportStatResolution').textContent = fmtHours(data.avg_resolution_hours);
           document.getElementById('reportStatCsat').textContent = data.csat.average !== null ? data.csat.average + ' / 5' : '—';
           document.getElementById('reportStatCsatCount').textContent = data.csat.responses;
+          renderSlaReport(data.sla);
           renderBreakdownList('reportByStatus', data.by_status, 'status');
           renderBreakdownList('reportByCategory', data.by_category, 'category');
           renderBreakdownList('reportByPriority', data.by_priority, 'priority');

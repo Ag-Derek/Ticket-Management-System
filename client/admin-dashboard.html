@@ -59,9 +59,10 @@
 
         <div class="card-panel wide">
           <h2 style="font-size:26px;margin-bottom:16px;">Queue overview</h2>
-          <div class="meta-grid stats">
+          <div class="meta-grid stats five">
             <div class="meta-box"><p class="k">Open</p><p class="v" id="adminStatOpen">—</p></div>
             <div class="meta-box"><p class="k">Critical</p><p class="v hot" id="adminStatCritical">—</p></div>
+            <div class="meta-box"><p class="k">SLA breached</p><p class="v hot" id="adminStatSlaBreached">—</p></div>
             <div class="meta-box"><p class="k">Unassigned</p><p class="v" id="adminStatUnassigned">—</p></div>
             <div class="meta-box"><p class="k">Resolved</p><p class="v" id="adminStatResolved">—</p></div>
           </div>
@@ -282,6 +283,18 @@
             <div class="meta-box"><p class="k">Avg. CSAT</p><p class="v" id="reportStatCsat">—</p></div>
             <div class="meta-box"><p class="k">CSAT responses</p><p class="v" id="reportStatCsatCount">—</p></div>
           </div>
+        </div>
+
+        <div class="card-panel wide">
+          <h3 style="margin-bottom:6px;">SLA compliance</h3>
+          <p class="lead" style="margin:0 0 16px;">Share of tickets that met their target, out of those with an outcome. Tickets still on the clock aren't counted yet.</p>
+          <div class="meta-grid stats">
+            <div class="meta-box"><p class="k">Response met</p><p class="v" id="reportSlaResponse">—</p></div>
+            <div class="meta-box"><p class="k">Resolution met</p><p class="v" id="reportSlaResolution">—</p></div>
+            <div class="meta-box"><p class="k">Resolution breaches</p><p class="v hot" id="reportSlaBreached">—</p></div>
+            <div class="meta-box"><p class="k">Open &amp; breached</p><p class="v hot" id="reportSlaOpenBreached">—</p></div>
+          </div>
+          <div class="history-list" id="reportSlaByPriority" style="margin-top:16px;"></div>
         </div>
 
         <div class="card-panel wide">

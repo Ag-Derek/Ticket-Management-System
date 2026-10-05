@@ -7,33 +7,22 @@ const { requireTicketAccess } = require('../middleware/authorize');
 const { asyncHandler } = require('../utils/async-handler');
 const { recordAuditLog, resolveActorName } = require('../utils/audit');
 const { notifyTicketCreated, notifyTicketResolved, notifyTicketAssigned } = require('../utils/ticket-notifications');
+const { slaFor, slaSummary, SLA_PAUSED_STATUSES } = require('../utils/sla');
 
 const router = express.Router();
 
 const VALID_CATEGORIES = ['Network', 'Application', 'Hardware', 'Access & Identity'];
 const VALID_PRIORITIES = ['Low', 'Medium', 'High', 'Critical'];
 
-// Pulled directly from app.js's teamByCategory / slaByPriority — the server
-// is now the single source of truth for these, so the client no longer
-// needs (or should keep) its own copies once it's wired to this API.
+// Pulled directly from app.js's teamByCategory — the server is now the
+// single source of truth for this (and for SLA targets, see utils/sla.js),
+// so the client no longer needs (or should keep) its own copies.
 const TEAM_BY_CATEGORY = {
   Network: 'Network Support',
   Application: 'Application Support',
   Hardware: 'Infrastructure',
   'Access & Identity': 'Access & Identity'
 };
-
-const SLA_BY_PRIORITY = {
-  Critical: { response: '15 min', resolution: '4 hrs' },
-  High: { response: '30 min', resolution: '8 hrs' },
-  Medium: { response: '4 hrs', resolution: '2 days' },
-  Low: { response: '1 day', resolution: '5 days' }
-};
-
-function slaSummary(priority) {
-  const sla = SLA_BY_PRIORITY[priority] || SLA_BY_PRIORITY.Medium;
-  return `${sla.response} response / ${sla.resolution} resolution`;
-}
 
 // Matches app.js's STATUS_TRANSITIONS exactly:
 // - No entry for 'Created' — a ticket must be assigned before any status
@@ -134,6 +123,7 @@ router.post('/', requireAuth(['user', 'admin']), asyncHandler(async (req, res) =
   const id = await nextId(db, 'tickets', 'TKT');
   const team = TEAM_BY_CATEGORY[category];
   const sla = slaSummary(priority);
+  const { responseMinutes, resolutionMinutes } = slaFor(priority);
 
   // Files are uploaded before the ticket row exists — a size-cap failure
   // here means the ticket is never created at all, rather than ending up
@@ -150,9 +140,12 @@ router.post('/', requireAuth(['user', 'admin']), asyncHandler(async (req, res) =
       await client.query(
         `INSERT INTO tickets
            (id, user_id, subject, description, category, priority, status,
-            affected_service, assigned_team, sla_summary)
-         VALUES ($1, $2, $3, $4, $5, $6, 'Created', $7, $8, $9)`,
-        [id, user_id, subject.trim(), description.trim(), category, priority, affected_service || null, team, sla]
+            affected_service, assigned_team, sla_summary,
+            first_response_due_at, resolution_due_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 'Created', $7, $8, $9,
+                 now() + make_interval(mins => $10), now() + make_interval(mins => $11))`,
+        [id, user_id, subject.trim(), description.trim(), category, priority, affected_service || null, team, sla,
+          responseMinutes, resolutionMinutes]
       );
 
       await insertAttachmentRows(client, { ticketId: id }, normalizedAttachments);
@@ -295,9 +288,18 @@ router.patch('/:id/assign', requireAuth(['admin']), asyncHandler(async (req, res
     // Assigning (by anyone — this route is admin-only) consumes any
     // pending suggested_agent_id an agent left behind while escalating,
     // whether or not the admin actually went with that suggestion.
+    // Unassigning a Waiting ticket drops it back to Created, which resumes
+    // a paused SLA clock the same way PATCH /:id/status does.
     await db.query(
-      `UPDATE tickets SET assigned_agent_id = $1, status = $2, suggested_agent_id = NULL, updated_at = now() WHERE id = $3`,
-      [assignedAgentId, newStatus, req.params.id]
+      `UPDATE tickets
+       SET assigned_agent_id = $1, status = $2, suggested_agent_id = NULL,
+           resolution_due_at = CASE WHEN sla_paused_at IS NOT NULL AND NOT ($2 = ANY($4::text[]))
+                                    THEN resolution_due_at + (now() - sla_paused_at)
+                                    ELSE resolution_due_at END,
+           sla_paused_at = CASE WHEN $2 = ANY($4::text[]) THEN sla_paused_at ELSE NULL END,
+           updated_at = now()
+       WHERE id = $3`,
+      [assignedAgentId, newStatus, req.params.id, SLA_PAUSED_STATUSES]
     );
   } catch (err) {
     console.error('PATCH /:id/assign error:', err);
@@ -370,6 +372,12 @@ router.patch(
     }
 
     try {
+      // SLA clock (see utils/sla.js). Every right-hand side reads the row as
+      // it was before this UPDATE:
+      // - resolving counts as a first response if there hasn't been one;
+      // - entering Waiting/Resolved pauses the resolution clock;
+      // - leaving a paused status (except to Closed, where the clock no
+      //   longer matters) pushes the due time back by the paused time.
       await db.query(
         `UPDATE tickets
          SET status = $1,
@@ -381,9 +389,18 @@ router.patch(
                                 WHEN $5 = 'Reopened' THEN NULL
                                 ELSE resolved_at END,
              closed_at = CASE WHEN $5 = 'Closed' THEN now() ELSE closed_at END,
+             first_responded_at = CASE WHEN $5 = 'Resolved' THEN COALESCE(first_responded_at, now())
+                                       ELSE first_responded_at END,
+             resolution_due_at = CASE WHEN sla_paused_at IS NOT NULL AND NOT ($5 = ANY($8::text[])) AND $5 <> 'Closed'
+                                      THEN resolution_due_at + (now() - sla_paused_at)
+                                      ELSE resolution_due_at END,
+             sla_paused_at = CASE WHEN $5 = ANY($8::text[]) THEN COALESCE(sla_paused_at, now())
+                                  WHEN $5 = 'Closed' THEN sla_paused_at
+                                  ELSE NULL END,
              updated_at = now()
          WHERE id = $7`,
-        [status, resolution_summary || null, escalated_to || null, escalation_reason || null, status, suggestedAgentId, req.params.id]
+        [status, resolution_summary || null, escalated_to || null, escalation_reason || null, status, suggestedAgentId, req.params.id,
+          SLA_PAUSED_STATUSES]
       );
     } catch (err) {
       console.error('PATCH /:id/status error:', err);

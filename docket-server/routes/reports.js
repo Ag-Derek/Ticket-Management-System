@@ -7,8 +7,22 @@ const db = require('../db/connection');
 const { requireAuth } = require('../middleware/authenticate');
 const { asyncHandler } = require('../utils/async-handler');
 const { toCsv, toPdf, toDocx } = require('../utils/report-generators');
+const { RESPONSE_STATE_SQL, RESOLUTION_STATE_SQL } = require('../utils/sla');
 
 const router = express.Router();
+
+const SLA_STATE_LABELS = { met: 'Met', breached: 'Breached', pending: 'In progress' };
+
+function fmtDate(value) {
+  return value ? new Date(value).toLocaleString() : '';
+}
+
+// met / (met + breached) as a whole percentage — tickets whose clock is
+// still running don't count either way yet. null when nothing has an
+// outcome in the range.
+function compliancePct(met, breached) {
+  return met + breached ? Math.round((met / (met + breached)) * 100) : null;
+}
 
 const TICKET_COLUMNS = [
   { label: 'Ticket ID', value: 'id' },
@@ -26,7 +40,14 @@ const TICKET_COLUMNS = [
   { label: 'CSAT feedback', value: (r) => r.csat_comment || '', csvOnly: true },
   { label: 'Created', value: (r) => new Date(r.created_at).toLocaleString() },
   { label: 'Resolved', value: (r) => (r.resolved_at ? new Date(r.resolved_at).toLocaleString() : '') },
-  { label: 'Closed', value: (r) => (r.closed_at ? new Date(r.closed_at).toLocaleString() : '') }
+  { label: 'Closed', value: (r) => (r.closed_at ? new Date(r.closed_at).toLocaleString() : '') },
+  // The SLA outcomes fit every format; the raw timestamps behind them are
+  // CSV-only, same reasoning as CSAT feedback.
+  { label: 'Response SLA', value: (r) => SLA_STATE_LABELS[r.response_sla_state] || '' },
+  { label: 'Resolution SLA', value: (r) => SLA_STATE_LABELS[r.resolution_sla_state] || '' },
+  { label: 'Response due', value: (r) => fmtDate(r.first_response_due_at), csvOnly: true },
+  { label: 'First response', value: (r) => fmtDate(r.first_responded_at), csvOnly: true },
+  { label: 'Resolution due', value: (r) => fmtDate(r.resolution_due_at), csvOnly: true }
 ];
 
 const AUDIT_COLUMNS = [
@@ -47,7 +68,7 @@ router.get('/summary', requireAuth(['admin']), asyncHandler(async (req, res) => 
   if (from) { params.push(from); where += ` AND created_at >= $${params.length}`; }
   if (to) { params.push(to); where += ` AND created_at <= $${params.length}`; }
 
-  const [total, byStatus, byCategory, byPriority, csat, resolution, byAgent] = await Promise.all([
+  const [total, byStatus, byCategory, byPriority, csat, resolution, byAgent, sla] = await Promise.all([
     db.query(`SELECT COUNT(*) AS n FROM tickets ${where}`, params),
     db.query(`SELECT status, COUNT(*) AS n FROM tickets ${where} GROUP BY status ORDER BY status`, params),
     db.query(`SELECT category, COUNT(*) AS n FROM tickets ${where} GROUP BY category ORDER BY category`, params),
@@ -73,8 +94,36 @@ router.get('/summary', requireAuth(['admin']), asyncHandler(async (req, res) => 
        LEFT JOIN tickets t ON t.assigned_agent_id = a.id
        GROUP BY a.id, a.full_name
        ORDER BY a.full_name`
+    ),
+    // SLA outcomes per priority; the overall figures are summed from these
+    // below. open_breached is tickets still open right now with a blown
+    // resolution SLA: the ones that need attention today.
+    db.query(
+      `SELECT priority,
+              COUNT(*) FILTER (WHERE rs = 'met')::int AS response_met,
+              COUNT(*) FILTER (WHERE rs = 'breached')::int AS response_breached,
+              COUNT(*) FILTER (WHERE rs = 'pending')::int AS response_pending,
+              COUNT(*) FILTER (WHERE res = 'met')::int AS resolution_met,
+              COUNT(*) FILTER (WHERE res = 'breached')::int AS resolution_breached,
+              COUNT(*) FILTER (WHERE res = 'pending')::int AS resolution_pending,
+              COUNT(*) FILTER (WHERE res = 'breached' AND status NOT IN ('Resolved', 'Closed'))::int AS open_breached
+       FROM (
+         SELECT t.priority, t.status, ${RESPONSE_STATE_SQL} AS rs, ${RESOLUTION_STATE_SQL} AS res
+         FROM tickets t ${where}
+       ) s
+       GROUP BY priority
+       ORDER BY CASE priority WHEN 'Critical' THEN 1 WHEN 'High' THEN 2 WHEN 'Medium' THEN 3 WHEN 'Low' THEN 4 ELSE 5 END`,
+      params
     )
   ]);
+
+  const slaTotals = sla.rows.reduce((acc, r) => {
+    for (const k of Object.keys(acc)) acc[k] += r[k];
+    return acc;
+  }, {
+    response_met: 0, response_breached: 0, response_pending: 0,
+    resolution_met: 0, resolution_breached: 0, resolution_pending: 0, open_breached: 0
+  });
 
   res.json({
     total: Number(total.rows[0].n),
@@ -91,7 +140,29 @@ router.get('/summary', requireAuth(['admin']), asyncHandler(async (req, res) => 
       agent_name: r.full_name,
       open_count: Number(r.open_count),
       resolved_count: Number(r.resolved_count)
-    }))
+    })),
+    sla: {
+      response: {
+        met: slaTotals.response_met,
+        breached: slaTotals.response_breached,
+        pending: slaTotals.response_pending,
+        compliance_pct: compliancePct(slaTotals.response_met, slaTotals.response_breached)
+      },
+      resolution: {
+        met: slaTotals.resolution_met,
+        breached: slaTotals.resolution_breached,
+        pending: slaTotals.resolution_pending,
+        compliance_pct: compliancePct(slaTotals.resolution_met, slaTotals.resolution_breached)
+      },
+      open_breached: slaTotals.open_breached,
+      by_priority: sla.rows.map((r) => ({
+        priority: r.priority,
+        response_compliance_pct: compliancePct(r.response_met, r.response_breached),
+        resolution_compliance_pct: compliancePct(r.resolution_met, r.resolution_breached),
+        response_breached: r.response_breached,
+        resolution_breached: r.resolution_breached
+      }))
+    }
   });
 }));
 
@@ -110,7 +181,9 @@ router.get('/export', requireAuth(['admin']), asyncHandler(async (req, res) => {
   if (type === 'tickets') {
     const { from, to, status, category, priority, assigned_agent_id } = req.query;
     const params = [];
-    let sql = `SELECT t.*, u.email AS requester_email, a.full_name AS agent_name
+    let sql = `SELECT t.*, u.email AS requester_email, a.full_name AS agent_name,
+                      ${RESPONSE_STATE_SQL} AS response_sla_state,
+                      ${RESOLUTION_STATE_SQL} AS resolution_sla_state
                FROM tickets t
                LEFT JOIN users u ON u.id = t.user_id
                LEFT JOIN agents a ON a.id = t.assigned_agent_id
