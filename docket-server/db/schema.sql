@@ -178,6 +178,16 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Session revocation. Every token carries the owner's token_version from
+-- when it was issued, and requireAuth rejects it once the stored value has
+-- moved on — so bumping this (password reset, "sign out everywhere") kills
+-- every outstanding session for that account at once. Lives on the owner
+-- tables, not auth_credentials, because customers and agents have no
+-- credentials row (they sign in by emailed code alone).
+ALTER TABLE users  ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE admins ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0;
+
 CREATE INDEX IF NOT EXISTS idx_tickets_user ON tickets(user_id);
 CREATE INDEX IF NOT EXISTS idx_tickets_agent ON tickets(assigned_agent_id);
 CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);

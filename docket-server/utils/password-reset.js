@@ -19,6 +19,7 @@ const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const db = require('../db/connection');
 const { sendEmail, escapeHtml, appLink, greetingFor } = require('./email');
+const { revokeSessions } = require('../middleware/authenticate');
 
 const TOKEN_TTL_MINUTES = 30;
 const MAX_REQUESTS_PER_WINDOW = 3;
@@ -153,6 +154,10 @@ async function completeReset(token, newPassword) {
        WHERE owner_type = $1 AND owner_id = $2 AND used_at IS NULL`,
       [row.owner_type, row.owner_id]
     );
+
+    // A reset usually means the old password can't be trusted — end every
+    // session that was signed in with it, in the same transaction.
+    await revokeSessions(row.owner_type, row.owner_id, client);
 
     const ownerResult = await client.query(
       `SELECT id, email, full_name FROM ${OWNER_TABLES[row.owner_type]} WHERE id = $1`,

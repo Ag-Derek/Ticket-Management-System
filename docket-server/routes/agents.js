@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db/connection');
 const { nextId } = require('../utils/ids');
-const { verifyToken, requireAuth } = require('../middleware/authenticate');
+const { authenticateToken, bearerToken, requireAuth } = require('../middleware/authenticate');
 const { recordAuditLog, resolveActorName } = require('../utils/audit');
 const { createChallenge, MfaError, sendMfaError } = require('../utils/mfa');
 
@@ -54,8 +54,12 @@ router.post('/', async (req, res) => {
 
   let adminPayload = null;
   if (createdBy !== 'self-signup') {
-    const header = req.headers.authorization || '';
-    adminPayload = verifyToken(header.startsWith('Bearer ') ? header.slice(7) : null);
+    try {
+      adminPayload = await authenticateToken(bearerToken(req));
+    } catch (err) {
+      console.error('POST /api/agents: failed to check session', err);
+      return res.status(500).json({ error: 'failed to check session' });
+    }
     if (!adminPayload || adminPayload.ownerType !== 'admin') {
       return res.status(403).json({ error: 'Only an admin can add agents' });
     }
@@ -147,7 +151,9 @@ router.get('/:id/tickets', requireAuth(['admin']), async (req, res) => {
 // agent are unassigned first (back to Created, same as choosing
 // "Unassigned" in PATCH /tickets/:id/assign; Resolved/Closed stay put), and
 // any escalation suggestion pointing at them is cleared, so no FK is left
-// dangling. Their login credentials and pending sign-in codes go too.
+// dangling. Their login credentials and pending sign-in codes go too, and
+// any session they're signed in with stops working on its next request
+// (requireAuth finds no agent row to match the token against).
 router.delete('/:id', requireAuth(['admin']), async (req, res) => {
   try {
     const agentResult = await db.query('SELECT id, full_name, email FROM agents WHERE id = $1', [req.params.id]);

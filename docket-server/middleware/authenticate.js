@@ -4,15 +4,20 @@
 // won't need to change at the call sites in routes/auth.js or elsewhere.
 //
 // Token = base64url(payload) + '.' + base64url(HMAC-SHA256(payload, secret))
-// Payload = { ownerType, ownerId, iat, exp }
+// Payload = { ownerType, ownerId, tv, iat, exp }
 //
-// AUTH_TOKEN_SECRET must be set in production. The fallback below is only
-// so local dev doesn't crash on a missing .env — it deliberately logs a
-// warning every time it's used so it can't go unnoticed.
+// The signature alone can't be taken back once issued, so every request
+// also checks `tv` against the owner's current token_version (see
+// db/schema.sql). Bumping that column — revokeSessions() below — signs the
+// account out everywhere, and a deleted account has no row left to match,
+// so its tokens stop working immediately too.
+//
+// AUTH_TOKEN_SECRET must be set; the server refuses to start without it.
 
 require('dotenv').config();
 
 const crypto = require('crypto');
+const db = require('../db/connection');
 
 const SECRET = process.env.AUTH_TOKEN_SECRET;
 
@@ -22,6 +27,8 @@ if (!SECRET) {
 
 const TOKEN_TTL_SECONDS = 60 * 60 * 12; // 12 hours
 
+const OWNER_TABLES = { user: 'users', agent: 'agents', admin: 'admins' };
+
 function base64url(input) {
   return Buffer.from(input).toString('base64url');
 }
@@ -30,13 +37,16 @@ function sign(payloadB64) {
   return crypto.createHmac('sha256', SECRET).update(payloadB64).digest('base64url');
 }
 
-function signToken({ ownerType, ownerId }) {
+// tokenVersion is the owner row's token_version at sign-in.
+function signToken({ ownerType, ownerId, tokenVersion }) {
   const now = Math.floor(Date.now() / 1000);
-  const payload = { ownerType, ownerId, iat: now, exp: now + TOKEN_TTL_SECONDS };
+  const payload = { ownerType, ownerId, tv: tokenVersion || 0, iat: now, exp: now + TOKEN_TTL_SECONDS };
   const payloadB64 = base64url(JSON.stringify(payload));
   return `${payloadB64}.${sign(payloadB64)}`;
 }
 
+// Signature + expiry only — no database. Use authenticateToken() to decide
+// whether a request is actually signed in.
 function verifyToken(token) {
   if (!token || typeof token !== 'string' || !token.includes('.')) return null;
   const [payloadB64, signature] = token.split('.');
@@ -55,7 +65,37 @@ function verifyToken(token) {
   }
 
   if (!payload.exp || payload.exp < Math.floor(Date.now() / 1000)) return null; // expired
-  return payload; // { ownerType, ownerId, iat, exp }
+  return payload; // { ownerType, ownerId, tv, iat, exp }
+}
+
+// Full check: valid signature, not expired, the account still exists, and
+// it hasn't been signed out everywhere since this token was issued. Tokens
+// minted before token_version existed have no `tv` and count as version 0,
+// so they keep working until the account's first revocation.
+// Returns the payload, or null. Throws only on a database failure.
+async function authenticateToken(token) {
+  const payload = verifyToken(token);
+  if (!payload) return null;
+  const table = OWNER_TABLES[payload.ownerType];
+  if (!table) return null;
+
+  const result = await db.query(`SELECT token_version FROM ${table} WHERE id = $1`, [payload.ownerId]);
+  const row = result.rows[0];
+  if (!row || row.token_version !== (payload.tv || 0)) return null;
+  return payload;
+}
+
+function bearerToken(req) {
+  const header = req.headers.authorization || '';
+  return header.startsWith('Bearer ') ? header.slice(7) : null;
+}
+
+// Signs an account out of every device. Pass `client` to run inside an
+// existing db.withTransaction().
+async function revokeSessions(ownerType, ownerId, client) {
+  const table = OWNER_TABLES[ownerType];
+  if (!table) throw new Error(`unknown owner type: ${ownerType}`);
+  await (client || db).query(`UPDATE ${table} SET token_version = token_version + 1 WHERE id = $1`, [ownerId]);
 }
 
 // Authentication only — confirms who the caller is. Pass allowedRoles to
@@ -65,10 +105,16 @@ function verifyToken(token) {
 // separate middlewares) mirrors the point made earlier: one login/auth
 // mechanism, with authorization layered on top per-route.
 function requireAuth(allowedRoles = []) {
-  return (req, res, next) => {
-    const header = req.headers.authorization || '';
-    const token = header.startsWith('Bearer ') ? header.slice(7) : null;
-    const payload = verifyToken(token);
+  return async (req, res, next) => {
+    let payload;
+    try {
+      payload = await authenticateToken(bearerToken(req));
+    } catch (err) {
+      // An async middleware that throws would be an unhandled rejection —
+      // answer like any other DB failure instead.
+      console.error('requireAuth: failed to check session', err);
+      return res.status(500).json({ error: 'failed to check session' });
+    }
 
     if (!payload) {
       return res.status(401).json({ error: 'Missing or invalid authorization token' });
@@ -82,4 +128,4 @@ function requireAuth(allowedRoles = []) {
   };
 }
 
-module.exports = { signToken, verifyToken, requireAuth };
+module.exports = { signToken, verifyToken, authenticateToken, bearerToken, revokeSessions, requireAuth };

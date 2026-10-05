@@ -15,8 +15,8 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const db = require('../db/connection');
-const { signToken } = require('../middleware/authenticate');
-const { recordAuditLog } = require('../utils/audit');
+const { signToken, requireAuth, revokeSessions } = require('../middleware/authenticate');
+const { recordAuditLog, resolveActorName } = require('../utils/audit');
 const { nextId } = require('../utils/ids');
 const { createChallenge, verifyChallenge, resendChallenge, MfaError, sendMfaError } = require('../utils/mfa');
 const { requestReset, completeReset, sendPasswordChangedEmail, PasswordResetError } = require('../utils/password-reset');
@@ -196,7 +196,7 @@ router.post('/mfa/verify', async (req, res) => {
       [challenge.owner_type, record.id]
     );
 
-    const token = signToken({ ownerType: challenge.owner_type, ownerId: record.id });
+    const token = signToken({ ownerType: challenge.owner_type, ownerId: record.id, tokenVersion: record.token_version });
 
     recordAuditLog({
       actorType: challenge.owner_type,
@@ -244,6 +244,27 @@ router.post('/mfa/resend', async (req, res) => {
   }
 });
 
+// POST /api/auth/sign-out-everywhere
+// Ends every session for the caller's account, on every device — including
+// the one making this request, so the client should send the person back to
+// sign-in afterwards.
+router.post('/sign-out-everywhere', requireAuth(), async (req, res) => {
+  try {
+    await revokeSessions(req.actor.role, req.actor.id);
+    recordAuditLog({
+      actorType: req.actor.role,
+      actorId: req.actor.id,
+      actorName: await resolveActorName(req.actor),
+      action: 'auth.sessions_revoked',
+      details: { reason: 'sign out everywhere' }
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('POST /api/auth/sign-out-everywhere error:', err);
+    res.status(500).json({ error: 'failed to sign out' });
+  }
+});
+
 // POST /api/auth/password-reset/request  { email, role? }
 // Always answers the same way whether or not the email has an account (or
 // a password, or has hit the request limit), and does the lookup + send
@@ -285,7 +306,9 @@ router.post('/password-reset/request', (req, res) => {
 
 // POST /api/auth/password-reset/confirm  { token, password }
 // Doesn't sign the person in — they go back to the login page and sign in
-// (with MFA) using the new password.
+// (with MFA) using the new password. Every existing session for the account
+// is ended as part of the reset (see completeReset), so whoever prompted
+// the reset can't stay signed in on the old password.
 router.post('/password-reset/confirm', async (req, res) => {
   const { token, password } = req.body || {};
   try {
