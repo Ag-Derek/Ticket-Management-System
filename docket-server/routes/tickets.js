@@ -380,6 +380,10 @@ router.patch(
              escalated_to = COALESCE($3, escalated_to),
              escalation_reason = COALESCE($4, escalation_reason),
              suggested_agent_id = CASE WHEN $5 = 'Escalated' THEN $6 ELSE suggested_agent_id END,
+             resolved_at = CASE WHEN $5 = 'Resolved' THEN now()
+                                WHEN $5 = 'Reopened' THEN NULL
+                                ELSE resolved_at END,
+             closed_at = CASE WHEN $5 = 'Closed' THEN now() ELSE closed_at END,
              updated_at = now()
          WHERE id = $7`,
         [status, resolution_summary || null, escalated_to || null, escalation_reason || null, status, suggestedAgentId, req.params.id]

@@ -126,6 +126,15 @@ CREATE TABLE IF NOT EXISTS tickets (
 -- already exists without this column — add it separately, idempotently.
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS suggested_agent_id TEXT REFERENCES agents(id);
 
+-- When the ticket was (most recently) marked Resolved, and when the customer
+-- closed it. Reports measure resolution time from these rather than
+-- updated_at, which also moves on every comment, reassignment and CSAT
+-- rating. resolved_at is cleared on Reopened and set again on the next
+-- Resolved, so it always describes the resolution that actually stuck.
+-- Existing tickets are backfilled at the bottom of this file.
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
+
 CREATE TABLE IF NOT EXISTS ticket_comments (
   id            INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   ticket_id     TEXT NOT NULL REFERENCES tickets(id),
@@ -200,3 +209,24 @@ CREATE INDEX IF NOT EXISTS idx_password_resets_owner ON password_reset_tokens(ow
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs(entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_actor ON audit_logs(actor_type, actor_id);
+
+-- Backfill resolved_at/closed_at for tickets that were already Resolved or
+-- Closed before those columns existed: the time of the last matching status
+-- change in the audit log, or updated_at for tickets older than the audit
+-- log (the best estimate available). Only touches rows still NULL, so after
+-- the first boot this matches nothing.
+UPDATE tickets t
+SET resolved_at = COALESCE(
+  (SELECT MAX(a.created_at) FROM audit_logs a
+   WHERE a.entity_type = 'ticket' AND a.entity_id = t.id
+     AND a.action = 'ticket.status_changed' AND a.details->>'to_status' = 'Resolved'),
+  t.updated_at)
+WHERE t.resolved_at IS NULL AND t.status IN ('Resolved', 'Closed');
+
+UPDATE tickets t
+SET closed_at = COALESCE(
+  (SELECT MAX(a.created_at) FROM audit_logs a
+   WHERE a.entity_type = 'ticket' AND a.entity_id = t.id
+     AND a.action = 'ticket.status_changed' AND a.details->>'to_status' = 'Closed'),
+  t.updated_at)
+WHERE t.closed_at IS NULL AND t.status = 'Closed';

@@ -18,7 +18,12 @@ function cellText(col, row) {
 function toCsv(rows, columns) {
   const escape = (val) => {
     if (val === null || val === undefined) return '';
-    const s = String(val);
+    let s = String(val);
+    // Customers write subjects and CSAT feedback, and this file gets opened
+    // in Excel/Sheets — a text cell starting with = + - @ (or a tab/CR)
+    // would run as a formula there. A leading apostrophe makes it plain
+    // text. Numbers (CSAT rating) are left alone.
+    if (typeof val === 'string' && /^[=+\-@\t\r]/.test(s)) s = "'" + s;
     return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   };
   const header = columns.map((c) => escape(c.label)).join(',');

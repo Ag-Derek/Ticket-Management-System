@@ -20,8 +20,13 @@ const TICKET_COLUMNS = [
   { label: 'Assigned agent', value: (r) => r.agent_name || 'Unassigned' },
   { label: 'Requester', value: 'requester_email' },
   { label: 'CSAT', value: (r) => (r.csat_rating != null ? r.csat_rating : '') },
+  // Free text that can run to a paragraph — fine in a spreadsheet, but the
+  // PDF/Word tables give every column the same narrow width, so it's
+  // CSV-only (see the csvOnly filter in /export).
+  { label: 'CSAT feedback', value: (r) => r.csat_comment || '', csvOnly: true },
   { label: 'Created', value: (r) => new Date(r.created_at).toLocaleString() },
-  { label: 'Updated', value: (r) => new Date(r.updated_at).toLocaleString() }
+  { label: 'Resolved', value: (r) => (r.resolved_at ? new Date(r.resolved_at).toLocaleString() : '') },
+  { label: 'Closed', value: (r) => (r.closed_at ? new Date(r.closed_at).toLocaleString() : '') }
 ];
 
 const AUDIT_COLUMNS = [
@@ -52,9 +57,12 @@ router.get('/summary', requireAuth(['admin']), asyncHandler(async (req, res) => 
        FROM tickets ${where} AND csat_rating IS NOT NULL`,
       params
     ),
+    // Creation to (latest) resolution. resolved_at is only set while a
+    // ticket is Resolved or Closed — a Reopened ticket drops out until it's
+    // resolved again.
     db.query(
-      `SELECT ROUND(AVG(EXTRACT(EPOCH FROM (updated_at - created_at)) / 3600)::numeric, 1) AS avg_hours
-       FROM tickets ${where} AND status IN ('Resolved', 'Closed')`,
+      `SELECT ROUND(AVG(EXTRACT(EPOCH FROM (resolved_at - created_at)) / 3600)::numeric, 1) AS avg_hours
+       FROM tickets ${where} AND resolved_at IS NOT NULL`,
       params
     ),
     db.query(
@@ -145,6 +153,8 @@ router.get('/export', requireAuth(['admin']), asyncHandler(async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="${baseName}.csv"`);
     return res.send(toCsv(rows, columns));
   }
+
+  columns = columns.filter((c) => !c.csvOnly);
 
   if (format === 'pdf') {
     const buffer = await toPdf(title, rows, columns, subtitle);
