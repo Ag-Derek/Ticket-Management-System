@@ -50,6 +50,7 @@
         <button class="filter-chip admin-tab" data-tab="agents" type="button">Agents</button>
         <button class="filter-chip admin-tab" data-tab="audit" type="button">Audit Logs</button>
         <button class="filter-chip admin-tab" data-tab="reports" type="button">Reports</button>
+        <button class="filter-chip admin-tab" data-tab="help" type="button">Account Help <span class="tab-count" id="accountHelpOpenCount" style="display:none;"></span></button>
       </div>
 
       <!-- ============ TICKETS TAB ============ -->
@@ -330,6 +331,24 @@
             </div>
           </div>
           <button class="btn-amber btn-inline" id="reportExportBtn" type="button">Download report</button>
+        </div>
+
+      </div>
+
+      <!-- ============ ACCOUNT HELP TAB ============ -->
+      <div id="adminHelpPanel" style="display:none;">
+
+        <div class="card-panel wide ticket-history">
+          <h3>Account help requests</h3>
+          <p class="lead" style="margin:0 0 16px;">Customers who can't remember which email they signed up with. Check the possible matches. When you're confident one is theirs, use <strong>Send sign-in details</strong>: the account's own inbox gets a reminder that it's their sign-in email, and the contact email they gave only sees it masked (j•••@example.com). If nothing matches, reply to them at their contact email.</p>
+          <div class="queue-search-row">
+            <select id="accountHelpStatusFilter" class="queue-filter-select">
+              <option value="open">Open</option>
+              <option value="resolved">Resolved</option>
+              <option value="all">All</option>
+            </select>
+          </div>
+          <div class="history-list" id="accountHelpList"></div>
         </div>
 
       </div>

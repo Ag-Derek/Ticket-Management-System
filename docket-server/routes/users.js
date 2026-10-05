@@ -28,7 +28,9 @@ router.post('/', async (req, res) => {
   const normalizedEmail = email.trim().toLowerCase();
 
   try {
-    const existingResult = await db.query('SELECT * FROM users WHERE email = $1', [normalizedEmail]);
+    // lower() on the column too, so a row stored with capitals before emails
+    // were normalized still matches (same as routes/auth.js).
+    const existingResult = await db.query('SELECT * FROM users WHERE lower(email) = $1', [normalizedEmail]);
     const existing = existingResult.rows[0];
 
     const challenge = existing
@@ -76,10 +78,13 @@ router.post('/sign-in', async (req, res) => {
   }
 
   try {
-    const result = await db.query('SELECT * FROM users WHERE email = $1', [email]);
+    const result = await db.query('SELECT * FROM users WHERE lower(email) = $1', [email]);
     const existing = result.rows[0];
     if (!existing) {
-      return res.status(404).json({ error: "We couldn't find an account with that email.", signup: true });
+      return res.status(404).json({
+        error: "We couldn't find an account with that email. Check for typos, or try another address you may have used.",
+        signup: true
+      });
     }
 
     const challenge = await createChallenge({ ownerType: 'user', ownerId: existing.id, email, fullName: existing.full_name });
@@ -108,7 +113,7 @@ router.post('/sign-in', async (req, res) => {
 router.get('/by-email/:email', requireAuth(['admin']), async (req, res) => {
   const email = req.params.email.trim().toLowerCase();
   try {
-    const result = await db.query('SELECT * FROM users WHERE email = $1', [email]);
+    const result = await db.query('SELECT * FROM users WHERE lower(email) = $1', [email]);
     if (!result.rows[0]) return res.status(404).json({ error: 'not found' });
     res.json(result.rows[0]);
   } catch (err) {

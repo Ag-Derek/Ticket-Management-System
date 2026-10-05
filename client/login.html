@@ -38,6 +38,54 @@
 
       <button class="btn-amber" id="submitSignIn" type="button">Send sign-in code</button>
       <p class="form-switch">New here? <a href="profile.html">Create an account</a></p>
+      <p class="form-switch" style="margin-top:8px;"><a href="#" class="account-help-link">Can't remember which email you used?</a></p>
+    </div>
+
+    <div class="card-panel" id="accountHelpForm" style="display:none;">
+      <div class="login-mark">?</div>
+      <h2>Find my account</h2>
+      <p class="lead">Tell us a bit about yourself and our team will look up your account and contact you. Use an email you can check now; it doesn't have to be the one on your account.</p>
+
+      <div class="field" id="f-helpName">
+        <label for="helpName">Full name</label>
+        <input type="text" id="helpName" autocomplete="name" maxlength="120">
+        <div class="err" id="err-helpName">Enter your full name.</div>
+      </div>
+      <div class="field" id="f-helpEmail">
+        <label for="helpEmail">Email we can reach you at</label>
+        <input type="email" id="helpEmail" placeholder="you@company.com" autocomplete="email" maxlength="254">
+        <div class="err" id="err-helpEmail">Enter a valid email address.</div>
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label for="helpPhone">Phone <span class="opt">(optional)</span></label>
+          <input type="tel" id="helpPhone" autocomplete="tel" maxlength="40">
+        </div>
+        <div class="field">
+          <label for="helpOrganization">Organization <span class="opt">(optional)</span></label>
+          <input type="text" id="helpOrganization" autocomplete="organization" maxlength="120">
+        </div>
+      </div>
+      <div class="field">
+        <label for="helpDetails">Anything that helps us find you <span class="opt">(optional)</span></label>
+        <textarea id="helpDetails" maxlength="1000" placeholder="e.g. emails you might have used, or a ticket number"></textarea>
+      </div>
+      <!-- Honeypot: hidden from people, filled in by bots. -->
+      <div style="position:absolute;left:-9999px;" aria-hidden="true">
+        <label for="helpWebsite">Website</label>
+        <input type="text" id="helpWebsite" tabindex="-1" autocomplete="off">
+      </div>
+
+      <div class="err" id="err-helpSubmit" style="margin:0 0 12px;"></div>
+      <button class="btn-amber" id="submitAccountHelp" type="button">Send request</button>
+      <p class="form-switch"><a href="#" id="backToSignIn">← Back to sign in</a></p>
+    </div>
+
+    <div class="card-panel" id="accountHelpDone" style="display:none;">
+      <div class="login-mark">✓</div>
+      <h2>Request sent</h2>
+      <p class="lead" id="accountHelpDoneText"></p>
+      <p class="form-switch"><a href="#" id="doneBackToSignIn">← Back to sign in</a></p>
     </div>
   </section>
 

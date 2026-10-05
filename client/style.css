@@ -608,6 +608,28 @@ h1.display{
 .history-row.status-waiting{border-color:#8A6A00;}
 .history-row.status-escalated{border-color:#B1291F;}
 .history-row .history-unassigned{color:#B14A1F;}
+
+/* Admin console: Account Help tab */
+.tab-count{
+  display:inline-block;min-width:18px;margin-left:4px;padding:1px 6px;border-radius:999px;
+  background:#B14A1F;color:#fff;font-size:11px;line-height:16px;text-align:center;
+}
+.help-request{background:var(--white);border:1px solid var(--line);border-radius:14px;padding:16px;}
+.help-request.resolved{opacity:.75;}
+.help-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:10px;}
+.help-head .history-status{font-size:11px;font-weight:600;letter-spacing:.03em;text-transform:uppercase;color:var(--muted);}
+.help-details{margin:12px 0 0;font-size:13.5px;line-height:1.6;white-space:pre-wrap;word-break:break-word;}
+.help-label{margin:16px 0 8px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;}
+.help-matches{display:flex;flex-direction:column;gap:8px;}
+.help-match{
+  display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;font-size:13px;
+  background:var(--paper-alt);border:1px solid var(--line);border-radius:10px;padding:9px 12px;
+}
+.help-match .history-id{margin:0;}
+.help-match span{word-break:break-word;}
+.help-none{margin:0;font-size:13px;color:var(--muted);}
+.help-resolution{margin:14px 0 10px;font-size:13px;color:var(--muted);}
+.help-request .err{margin:0 0 10px;}
 .queue-empty{text-align:center;padding:20px 0;}
 
 /* ---- Ticket chat ---- */

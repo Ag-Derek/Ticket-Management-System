@@ -61,6 +61,17 @@ app.use('/api/auth', authLimiter);
 app.post('/api/users', authLimiter);
 app.post('/api/users/sign-in', authLimiter);
 app.post('/api/agents', authLimiter);
+// The public "Find my account" form (routes/account-help.js) writes a row
+// an admin has to read, so it gets a far tighter cap than sign-in: a real
+// person sends one, maybe two.
+const accountHelpLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 5,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Too many requests from this network. Please try again in an hour.' }
+});
+app.post('/api/account-help', accountHelpLimiter);
 // Attachments travel as base64 inline in the JSON body (see
 // attachment-storage.js's 5MB-per-file cap) — base64 inflates that by
 // ~33%, and a ticket/comment can carry more than one file, so the
@@ -114,6 +125,7 @@ app.use('/api/backup', require('./routes/backup'));
 app.use('/api/audit-logs', require('./routes/audit-logs'));
 app.use('/api/reports', require('./routes/reports'));
 app.use('/api/notifications', require('./routes/notifications'));
+app.use('/api/account-help', require('./routes/account-help'));
 
 // Catch-all: anything forwarded via next(err) — including every rejected
 // promise from an asyncHandler-wrapped route — lands here instead of

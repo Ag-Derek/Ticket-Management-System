@@ -457,12 +457,22 @@ document.addEventListener('DOMContentLoaded', function () {
         .then(function (res) {
           if (res.ok) return promptForMfaCode(res.data, email);
           if (res.data.signup) {
+            // Point at "Find my account" before "Create an account", so someone
+            // who's sure they've signed up before doesn't make a duplicate.
             signInErr.innerHTML = '';
             signInErr.appendChild(document.createTextNode((res.data.error || 'No account found.') + ' '));
+            var helpLink = document.createElement('a');
+            helpLink.href = '#';
+            helpLink.className = 'account-help-link';
+            helpLink.textContent = 'Find my account';
+            helpLink.addEventListener('click', openAccountHelp);
+            signInErr.appendChild(helpLink);
+            signInErr.appendChild(document.createTextNode(' or '));
             var link = document.createElement('a');
             link.href = 'profile.html';
-            link.textContent = 'Create an account';
+            link.textContent = 'create a new account';
             signInErr.appendChild(link);
+            signInErr.appendChild(document.createTextNode('.'));
             signInField.classList.add('invalid');
             return null;
           }
@@ -486,6 +496,77 @@ document.addEventListener('DOMContentLoaded', function () {
 
     submitSignInBtn.addEventListener('click', submitSignIn);
     signInEmail.addEventListener('keydown', function (e) { if (e.key === 'Enter') submitSignIn(); });
+
+    // ---- "Find my account" (POST /api/account-help) ----
+    // For customers who can't remember which email they signed up with. The
+    // server answers the same way whether or not anything matches, and an
+    // admin follows up from the Account Help tab.
+    var accountHelpForm = document.getElementById('accountHelpForm');
+    var accountHelpDone = document.getElementById('accountHelpDone');
+
+    function showSignInCard(which) {
+      signInForm.style.display = which === 'signin' ? '' : 'none';
+      accountHelpForm.style.display = which === 'help' ? '' : 'none';
+      accountHelpDone.style.display = which === 'done' ? '' : 'none';
+    }
+
+    function openAccountHelp(e) {
+      if (e) e.preventDefault();
+      showSignInCard('help');
+      document.getElementById('helpName').focus();
+    }
+
+    function backToSignIn(e) {
+      if (e) e.preventDefault();
+      showSignInCard('signin');
+      signInEmail.focus();
+    }
+
+    document.querySelectorAll('.account-help-link').forEach(function (a) { a.addEventListener('click', openAccountHelp); });
+    document.getElementById('backToSignIn').addEventListener('click', backToSignIn);
+    document.getElementById('doneBackToSignIn').addEventListener('click', backToSignIn);
+
+    var submitAccountHelpBtn = document.getElementById('submitAccountHelp');
+    var accountHelpSubmitErr = document.getElementById('err-helpSubmit');
+
+    function submitAccountHelp() {
+      if (submitAccountHelpBtn.disabled) return;
+      var nameEl = document.getElementById('helpName');
+      var emailEl = document.getElementById('helpEmail');
+      var nameOk = !!nameEl.value.trim();
+      var emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailEl.value.trim());
+      document.getElementById('f-helpName').classList.toggle('invalid', !nameOk);
+      document.getElementById('f-helpEmail').classList.toggle('invalid', !emailOk);
+      accountHelpSubmitErr.style.display = 'none';
+      if (!nameOk || !emailOk) return;
+
+      submitAccountHelpBtn.disabled = true;
+      submitAccountHelpBtn.textContent = 'Sending…';
+
+      postJson('/api/account-help', {
+        full_name: nameEl.value.trim(),
+        contact_email: emailEl.value.trim(),
+        phone: document.getElementById('helpPhone').value.trim(),
+        organization: document.getElementById('helpOrganization').value.trim(),
+        details: document.getElementById('helpDetails').value.trim(),
+        website: document.getElementById('helpWebsite').value
+      })
+        .then(function (res) {
+          if (!res.ok) throw new Error(res.data.error || 'Unable to send your request.');
+          document.getElementById('accountHelpDoneText').textContent = res.data.message;
+          showSignInCard('done');
+        })
+        .catch(function (err) {
+          accountHelpSubmitErr.textContent = err.message && err.message !== 'Failed to fetch' ? err.message : 'Network error. Please try again.';
+          accountHelpSubmitErr.style.display = 'block';
+        })
+        .finally(function () {
+          submitAccountHelpBtn.disabled = false;
+          submitAccountHelpBtn.textContent = 'Send request';
+        });
+    }
+
+    submitAccountHelpBtn.addEventListener('click', submitAccountHelp);
   }
 
   // Profile form validation + confirmation stub
@@ -3449,11 +3530,181 @@ document.addEventListener('DOMContentLoaded', function () {
         document.getElementById('adminAgentsPanel').style.display = tab === 'agents' ? '' : 'none';
         document.getElementById('adminAuditPanel').style.display = tab === 'audit' ? '' : 'none';
         document.getElementById('adminReportsPanel').style.display = tab === 'reports' ? '' : 'none';
+        document.getElementById('adminHelpPanel').style.display = tab === 'help' ? '' : 'none';
         if (tab === 'agents') renderAgentDirectory();
         if (tab === 'audit') loadAuditFacets(function () { loadAuditLogs(); });
         if (tab === 'reports') loadReportSummary();
+        if (tab === 'help') loadAccountHelp();
       });
     });
+
+    // ---- Account Help tab: "can't remember my email" requests ----
+    var accountHelpStatus = 'open';
+
+    function setAccountHelpOpenCount(n) {
+      var badge = document.getElementById('accountHelpOpenCount');
+      badge.textContent = n;
+      badge.style.display = n ? '' : 'none';
+    }
+
+    function updateAccountHelp(id, body) {
+      return fetch(API_BASE + '/api/account-help/' + encodeURIComponent(id), {
+        method: 'PATCH',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+        body: JSON.stringify(body)
+      }).then(function (response) {
+        if (response.status === 401 && handleAuthExpired()) return new Promise(function () {});
+        return response.json().catch(function () { return {}; }).then(function (data) {
+          if (!response.ok) throw new Error(data.error || 'Unable to update this request.');
+          return data;
+        });
+      });
+    }
+
+    function renderAccountHelpRequest(r) {
+      var card = document.createElement('div');
+      card.className = 'help-request' + (r.status === 'resolved' ? ' resolved' : '');
+
+      var facts = [
+        ['Contact email', r.contact_email],
+        ['Phone', r.phone],
+        ['Organization', r.organization]
+      ].filter(function (f) { return f[1]; });
+
+      var matches = r.possible_matches || [];
+      var matchesHtml = matches.length
+        ? matches.map(function (m) {
+            return '<div class="help-match">' +
+              '<span class="history-id">' + escapeHtml(m.id) + '</span>' +
+              '<strong>' + escapeHtml(m.full_name) + '</strong>' +
+              '<span>' + escapeHtml(m.email) + '</span>' +
+              (m.phone ? '<span>' + escapeHtml(m.phone) + '</span>' : '') +
+              (m.organization ? '<span>' + escapeHtml(m.organization) + '</span>' : '') +
+              '<span class="history-chip">' + escapeHtml(m.ticket_count) + ' ticket' + (Number(m.ticket_count) === 1 ? '' : 's') + '</span>' +
+              (r.status === 'open'
+                ? '<button class="btn-ghost btn-small help-notify" type="button" data-user-id="' + escapeHtml(m.id) + '">Send sign-in details</button>'
+                : '') +
+            '</div>';
+          }).join('')
+        : '<p class="help-none">No customer shares this name, email or phone. Search the Tickets tab by other details they gave.</p>';
+
+      card.innerHTML =
+        '<div class="help-head">' +
+          '<div>' +
+            '<p class="history-id">#' + escapeHtml(r.id) + ' · ' + escapeHtml(new Date(r.created_at).toLocaleString()) + '</p>' +
+            '<p class="history-subject">' + escapeHtml(r.full_name) + '</p>' +
+          '</div>' +
+          '<span class="history-status">' + (r.status === 'resolved' ? 'Resolved' : 'Open') + '</span>' +
+        '</div>' +
+        '<div class="history-meta">' +
+          facts.map(function (f) { return '<span class="history-chip">' + escapeHtml(f[0]) + ': ' + escapeHtml(f[1]) + '</span>'; }).join('') +
+        '</div>' +
+        (r.details ? '<p class="help-details">' + escapeHtml(r.details) + '</p>' : '') +
+        '<p class="help-label">Possible matches</p>' +
+        '<div class="help-matches">' + matchesHtml + '</div>' +
+        (r.status === 'resolved'
+          ? '<p class="help-resolution">Resolved' + (r.resolved_by_name ? ' by ' + escapeHtml(r.resolved_by_name) : '') +
+              (r.resolved_at ? ' on ' + escapeHtml(new Date(r.resolved_at).toLocaleString()) : '') +
+              (r.resolution_note ? ': ' + escapeHtml(r.resolution_note) : '.') + '</p>' +
+            '<div class="action-row"><button class="btn-ghost btn-inline help-reopen" type="button">Reopen</button></div>'
+          : '<div class="field" style="margin:14px 0 10px;">' +
+              '<label>Resolution note <span class="opt">(optional)</span></label>' +
+              '<textarea class="help-note" maxlength="1000" placeholder="e.g. Emailed them: account is under j•••@example.com"></textarea>' +
+            '</div>' +
+            '<div class="err help-err"></div>' +
+            '<div class="action-row"><button class="btn-amber btn-inline help-resolve" type="button">Mark resolved</button></div>');
+
+      var errEl = card.querySelector('.help-err');
+      var resolveBtn = card.querySelector('.help-resolve');
+      var reopenBtn = card.querySelector('.help-reopen');
+      var actionBtn = resolveBtn || reopenBtn;
+      actionBtn.addEventListener('click', function () {
+        actionBtn.disabled = true;
+        if (errEl) errEl.style.display = 'none';
+        var body = resolveBtn
+          ? { status: 'resolved', note: card.querySelector('.help-note').value.trim() }
+          : { status: 'open' };
+        updateAccountHelp(r.id, body)
+          .then(function () { loadAccountHelp(); })
+          .catch(function (err) {
+            actionBtn.disabled = false;
+            if (errEl) { errEl.textContent = err.message; errEl.style.display = 'block'; }
+            else alert(err.message);
+          });
+      });
+
+      // POST /:id/notify emails the matched account its sign-in reminder
+      // (plus a masked pointer to the requester's contact address) and
+      // resolves the request.
+      card.querySelectorAll('.help-notify').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var m = matches.filter(function (x) { return x.id === btn.dataset.userId; })[0];
+          if (!m) return;
+          var msg = 'Email ' + m.full_name + ' at ' + m.email + ' to remind them this is their sign-in email?' +
+            (m.email.toLowerCase() !== r.contact_email ? '\n\n' + r.contact_email + ' will be told to check that inbox (shown masked).' : '') +
+            '\n\nThe request will be marked resolved.';
+          if (!confirm(msg)) return;
+
+          btn.disabled = true;
+          btn.textContent = 'Sending…';
+          if (errEl) errEl.style.display = 'none';
+          fetch(API_BASE + '/api/account-help/' + encodeURIComponent(r.id) + '/notify', {
+            method: 'POST',
+            headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+            body: JSON.stringify({ user_id: m.id })
+          })
+            .then(function (response) {
+              if (response.status === 401 && handleAuthExpired()) return new Promise(function () {});
+              return response.json().catch(function () { return {}; }).then(function (data) {
+                if (!response.ok) throw new Error(data.error || 'Unable to send the email.');
+              });
+            })
+            .then(function () { loadAccountHelp(); })
+            .catch(function (err) {
+              btn.disabled = false;
+              btn.textContent = 'Send sign-in details';
+              if (errEl) { errEl.textContent = err.message; errEl.style.display = 'block'; }
+            });
+        });
+      });
+      return card;
+    }
+
+    function loadAccountHelp() {
+      var listEl = document.getElementById('accountHelpList');
+      fetch(API_BASE + '/api/account-help?status=' + encodeURIComponent(accountHelpStatus), { headers: authHeaders() })
+        .then(function (response) {
+          if (!response.ok) {
+            if (response.status === 401 && handleAuthExpired()) return null;
+            throw new Error('failed to load account help requests');
+          }
+          return response.json();
+        })
+        .then(function (data) {
+          if (!data) return;
+          setAccountHelpOpenCount(data.open_count);
+          listEl.innerHTML = '';
+          if (!data.rows.length) {
+            listEl.innerHTML = '<p class="queue-no-results">' +
+              (accountHelpStatus === 'open' ? 'No open requests.' : 'No requests to show.') + '</p>';
+            return;
+          }
+          data.rows.forEach(function (r) { listEl.appendChild(renderAccountHelpRequest(r)); });
+        })
+        .catch(function (err) {
+          console.error('Account help load error:', err);
+          listEl.innerHTML = '<p class="queue-no-results">Couldn’t load account help requests. Try again in a moment.</p>';
+        });
+    }
+
+    document.getElementById('accountHelpStatusFilter').addEventListener('change', function (e) {
+      accountHelpStatus = e.target.value;
+      loadAccountHelp();
+    });
+
+    // Fill the tab's open-count badge on load, so new requests are noticed
+    // without opening the tab.
+    loadAccountHelp();
 
     // ---- Agents: directory list + create ----
     function ticketCountFor(name) {
