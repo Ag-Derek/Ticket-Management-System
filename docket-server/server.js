@@ -35,7 +35,9 @@ app.use(cors({
       return callback(null, true);
     }
     callback(null, false);
-  }
+  },
+  // Paged GET /api/tickets reports the full match count here.
+  exposedHeaders: ['X-Total-Count']
 }));
 
 // Attachments are served with whatever MIME type the uploader claimed —

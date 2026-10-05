@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db/connection');
 const { nextId } = require('../utils/ids');
-const { saveAttachmentFile, removeAttachmentFiles, uploadAllOrNone } = require('../utils/attachment-storage');
+const { removeAttachmentFiles, uploadIncomingAttachments, insertAttachmentRows } = require('../utils/attachment-storage');
 const { requireAuth } = require('../middleware/authenticate');
 const { requireTicketAccess } = require('../middleware/authorize');
 const { asyncHandler } = require('../utils/async-handler');
@@ -56,73 +56,55 @@ function canTransition(from, to) {
   return (STATUS_TRANSITIONS[from] || []).includes(to);
 }
 
-// Customer-visible attachment count: creation-time attachments always
-// count; chat attachments only count if they were posted on a public
-// comment. ticket_attachments enforces ticket_id XOR comment_id (see
-// schema.sql), so a comment's attachment never carries the ticket_id
-// directly — reach its owning ticket through comment_id ->
-// ticket_comments.ticket_id.
-async function attachmentCount(ticketId) {
-  const result = await db.query(
-    `SELECT COUNT(*) AS n FROM ticket_attachments ta
-     LEFT JOIN ticket_comments tc ON ta.comment_id = tc.id
-     WHERE ta.ticket_id = $1 OR (tc.ticket_id = $1 AND tc.visibility = 'public')`,
-    [ticketId]
-  );
-  return Number(result.rows[0].n);
-}
+// Every ticket row the API returns, with its requester's email and its
+// attachments, in one query — no per-ticket follow-up queries. Callers
+// append their own WHERE conditions (on alias t) and ORDER BY.
+//
+// - LEFT JOIN users (not JOIN) so a ticket never disappears from a queue
+//   just because its requester's user record is missing/inconsistent —
+//   requester_email simply comes back null in that case.
+// - attachment_count is the customer-visible count: creation-time
+//   attachments always count; chat attachments only count if they were
+//   posted on a public comment. ticket_attachments enforces ticket_id XOR
+//   comment_id (see schema.sql), so a comment's attachment is reached
+//   through comment_id -> ticket_comments.ticket_id.
+// - attachments is creation-time attachments only — chat attachments travel
+//   with their comment instead (see comments.js). stored_path is never sent
+//   to the client; it only needs the id, to build a
+//   GET /api/attachments/:id download link.
+const TICKET_SELECT = `
+  SELECT t.*, u.email AS requester_email,
+         COALESCE(direct.n, 0) + COALESCE(chat.n, 0) AS attachment_count,
+         COALESCE(direct.files, '[]'::json) AS attachments
+  FROM tickets t
+  LEFT JOIN users u ON u.id = t.user_id
+  LEFT JOIN LATERAL (
+    SELECT COUNT(*)::int AS n,
+           json_agg(json_build_object('id', ta.id, 'filename', ta.filename,
+                                      'mime_type', ta.mime_type, 'size_bytes', ta.size_bytes)
+                    ORDER BY ta.id) AS files
+    FROM ticket_attachments ta
+    WHERE ta.ticket_id = t.id
+  ) direct ON true
+  LEFT JOIN LATERAL (
+    SELECT COUNT(*)::int AS n
+    FROM ticket_attachments ta
+    JOIN ticket_comments tc ON tc.id = ta.comment_id
+    WHERE tc.ticket_id = t.id AND tc.visibility = 'public'
+  ) chat ON true`;
 
-// Creation-time attachments only (comment_id IS NULL) — chat attachments
-// travel with their comment instead (see comments.js). stored_path is
-// never sent to the client — it only ever needs the id, to build a
-// GET /api/attachments/:id download link.
-async function ticketAttachments(ticketId) {
-  const result = await db.query(
-    `SELECT id, filename, mime_type, size_bytes FROM ticket_attachments
-     WHERE ticket_id = $1 AND comment_id IS NULL
-     ORDER BY id ASC`,
-    [ticketId]
-  );
-  return result.rows;
-}
-
-// LEFT JOIN (not JOIN) so a ticket never disappears from a queue just
-// because its requester's user record is missing/inconsistent — requester_email
-// simply comes back null in that case, same as any other optional field.
 async function ticketWithComments(id) {
-  const ticketResult = await db.query(
-    'SELECT t.*, u.email AS requester_email FROM tickets t LEFT JOIN users u ON u.id = t.user_id WHERE t.id = $1',
-    [id]
-  );
+  const [ticketResult, commentsResult] = await Promise.all([
+    db.query(`${TICKET_SELECT} WHERE t.id = $1`, [id]),
+    db.query('SELECT * FROM ticket_comments WHERE ticket_id = $1 ORDER BY created_at ASC', [id])
+  ]);
   const ticket = ticketResult.rows[0];
   if (!ticket) return null;
-  const commentsResult = await db.query(
-    'SELECT * FROM ticket_comments WHERE ticket_id = $1 ORDER BY created_at ASC',
-    [id]
-  );
-  const [count, attachments] = await Promise.all([attachmentCount(id), ticketAttachments(id)]);
-  return { ...ticket, attachment_count: count, attachments, comments: commentsResult.rows };
+  return { ...ticket, comments: commentsResult.rows };
 }
 
-// Validates one incoming attachment payload and — if it carries content —
-// uploads it immediately, before any DB row exists for it. Accepts the
-// { filename, content_base64, mime_type? } shape the client sends; also
-// tolerates a bare filename string or an object with no content_base64
-// (nothing to upload, so stored_path stays null).
-async function normalizeIncomingAttachment(ticketId, a) {
-  if (!a) return null;
-  if (typeof a === 'string') {
-    const filename = a.trim();
-    return filename ? { filename, mime_type: null, size_bytes: null, stored_path: null } : null;
-  }
-  const filename = a.filename && String(a.filename).trim();
-  if (!filename) return null;
-  if (!a.content_base64) {
-    return { filename, mime_type: a.mime_type || null, size_bytes: null, stored_path: null };
-  }
-  const { storedPath, sizeBytes } = await saveAttachmentFile(ticketId, filename, a.content_base64);
-  return { filename, mime_type: a.mime_type || null, size_bytes: sizeBytes, stored_path: storedPath };
-}
+// ?limit= is capped so a single request can't ask for an unbounded page.
+const MAX_PAGE_SIZE = 200;
 
 // POST /api/tickets
 // body: { user_id?, subject, description, category, priority, affected_service?,
@@ -158,9 +140,7 @@ router.post('/', requireAuth(['user', 'admin']), asyncHandler(async (req, res) =
   // with a ticket that references a half-written attachment list.
   let normalizedAttachments;
   try {
-    normalizedAttachments = Array.isArray(attachments)
-      ? await uploadAllOrNone(attachments, (a) => normalizeIncomingAttachment(id, a))
-      : [];
+    normalizedAttachments = await uploadIncomingAttachments(id, attachments);
   } catch (err) {
     return res.status(400).json({ error: err.message });
   }
@@ -175,13 +155,7 @@ router.post('/', requireAuth(['user', 'admin']), asyncHandler(async (req, res) =
         [id, user_id, subject.trim(), description.trim(), category, priority, affected_service || null, team, sla]
       );
 
-      for (const a of normalizedAttachments) {
-        await client.query(
-          `INSERT INTO ticket_attachments (ticket_id, filename, mime_type, size_bytes, stored_path)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [id, a.filename, a.mime_type, a.size_bytes, a.stored_path]
-        );
-      }
+      await insertAttachmentRows(client, { ticketId: id }, normalizedAttachments);
     });
   } catch (err) {
     console.error('POST /api/tickets: failed to persist ticket', err);
@@ -212,31 +186,54 @@ router.post('/', requireAuth(['user', 'admin']), asyncHandler(async (req, res) =
 // server-side, regardless of what the query string says, so no actor can
 // list another customer's or another agent's tickets by editing the URL.
 // Admins may filter by whatever they like, including neither (all tickets).
+//
+// Pagination is opt-in: ?limit=N (max MAX_PAGE_SIZE) &offset=M returns one
+// page, newest first, with the total number of matching tickets in the
+// X-Total-Count header. Without ?limit the whole list comes back, as the
+// dashboards still expect today. The body is a plain array either way.
 router.get('/', requireAuth(), asyncHandler(async (req, res) => {
   const { status } = req.query;
-  let sql = 'SELECT t.*, u.email AS requester_email FROM tickets t LEFT JOIN users u ON u.id = t.user_id WHERE 1=1';
+  const limit = req.query.limit !== undefined ? Number(req.query.limit) : null;
+  const offset = req.query.offset !== undefined ? Number(req.query.offset) : 0;
+  if (limit !== null && (!Number.isInteger(limit) || limit < 1 || limit > MAX_PAGE_SIZE)) {
+    return res.status(400).json({ error: `limit must be an integer from 1 to ${MAX_PAGE_SIZE}` });
+  }
+  if (!Number.isInteger(offset) || offset < 0) {
+    return res.status(400).json({ error: 'offset must be a non-negative integer' });
+  }
+
+  let where = 'WHERE 1=1';
   const params = [];
 
   if (req.actor.role === 'user') {
-    params.push(req.actor.id); sql += ` AND t.user_id = $${params.length}`;
+    params.push(req.actor.id); where += ` AND t.user_id = $${params.length}`;
   } else if (req.actor.role === 'agent') {
-    params.push(req.actor.id); sql += ` AND t.assigned_agent_id = $${params.length}`;
+    params.push(req.actor.id); where += ` AND t.assigned_agent_id = $${params.length}`;
   } else if (req.actor.role === 'admin') {
-    if (req.query.user_id) { params.push(req.query.user_id); sql += ` AND t.user_id = $${params.length}`; }
-    if (req.query.assigned_agent_id) { params.push(req.query.assigned_agent_id); sql += ` AND t.assigned_agent_id = $${params.length}`; }
+    if (req.query.user_id) { params.push(req.query.user_id); where += ` AND t.user_id = $${params.length}`; }
+    if (req.query.assigned_agent_id) { params.push(req.query.assigned_agent_id); where += ` AND t.assigned_agent_id = $${params.length}`; }
   }
-  if (status) { params.push(status); sql += ` AND t.status = $${params.length}`; }
+  if (status) { params.push(status); where += ` AND t.status = $${params.length}`; }
 
-  sql += ' ORDER BY t.created_at DESC';
+  // t.id breaks created_at ties so pages never overlap or skip a row.
+  let sql = `${TICKET_SELECT} ${where} ORDER BY t.created_at DESC, t.id DESC`;
+  const pageParams = [...params];
+  if (limit !== null) {
+    pageParams.push(limit, offset);
+    sql += ` LIMIT $${pageParams.length - 1} OFFSET $${pageParams.length}`;
+  }
 
   try {
-    const result = await db.query(sql, params);
-    const rows = await Promise.all(result.rows.map(async (t) => ({
-      ...t,
-      attachment_count: await attachmentCount(t.id),
-      attachments: await ticketAttachments(t.id)
-    })));
-    res.json(rows);
+    if (limit !== null) {
+      const [result, countResult] = await Promise.all([
+        db.query(sql, pageParams),
+        db.query(`SELECT COUNT(*)::int AS n FROM tickets t ${where}`, params)
+      ]);
+      res.setHeader('X-Total-Count', String(countResult.rows[0].n));
+      return res.json(result.rows);
+    }
+    const result = await db.query(sql, pageParams);
+    res.json(result.rows);
   } catch (err) {
     console.error('GET /api/tickets error:', err);
     res.status(500).json({ error: 'failed to load tickets' });

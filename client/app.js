@@ -123,6 +123,35 @@ document.addEventListener('DOMContentLoaded', function () {
     return false;
   }
 
+  // "Sign out all devices": POST /api/auth/sign-out-everywhere ends every
+  // session for this account, this one included, so on success the local
+  // session is cleared too and the person goes back to sign-in. `signOut`
+  // is the page's own local sign-out (clear session + redirect).
+  function wireSignOutEverywhere(buttonId, signOut) {
+    var btn = document.getElementById(buttonId);
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+      if (!window.confirm('Sign out of Docket on every device, including this one?')) return;
+      btn.disabled = true;
+      fetch(API_BASE + '/api/auth/sign-out-everywhere', { method: 'POST', headers: authHeaders() })
+        .then(function (response) {
+          // A 401 means this session was already revoked — the outcome the
+          // person asked for, so sign out locally either way.
+          if (!response.ok && response.status !== 401) {
+            return response.json().catch(function () { return {}; }).then(function (data) {
+              throw new Error(data.error || 'Unable to sign out of other devices.');
+            });
+          }
+          signOut();
+        })
+        .catch(function (err) {
+          console.error('Sign out everywhere error:', err);
+          btn.disabled = false;
+          alert(err.message || 'Unable to sign out of other devices.');
+        });
+    });
+  }
+
   // ---- Email MFA (every sign-in: customer, agent, admin) ----
   // The sign-in endpoints no longer return a token — they email a 6-digit
   // code and respond { mfaRequired, challengeId }. This opens a dialog to
@@ -2151,10 +2180,12 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('agentChipInitials').textContent = agentInitials;
     document.getElementById('agentChipName').textContent = agent.name.split(' ')[0];
 
-    document.getElementById('agentLogoutBtn').addEventListener('click', function () {
+    function agentSignOut() {
       clearSession('docketAgent');
       window.location.href = 'agent-login.html';
-    });
+    }
+    document.getElementById('agentLogoutBtn').addEventListener('click', agentSignOut);
+    wireSignOutEverywhere('agentSignOutAllBtn', agentSignOut);
 
     // Tickets are fetched from the API at the bottom of this block; the old
     // localStorage read (and the backfill defaults it needed for records
@@ -3117,10 +3148,12 @@ document.addEventListener('DOMContentLoaded', function () {
 
   var logoutBtn = document.getElementById('logoutBtn');
   if (logoutBtn) {
-    logoutBtn.addEventListener('click', function () {
+    var customerSignOut = function () {
       localStorage.removeItem('docketUser');
       window.location.href = 'login.html';
-    });
+    };
+    logoutBtn.addEventListener('click', customerSignOut);
+    wireSignOutEverywhere('signOutAllBtn', customerSignOut);
   }
 
   // ---- Admin console (admin-dashboard.html): sitewide queue overview, assign/reassign
@@ -3141,10 +3174,12 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('adminChipInitials').textContent = adminInitials;
     document.getElementById('adminChipName').textContent = adminUser.name.split(' ')[0];
 
-    document.getElementById('adminLogoutBtn').addEventListener('click', function () {
+    function adminSignOut() {
       clearSession('docketAdmin');
       window.location.href = 'admin-login.html';
-    });
+    }
+    document.getElementById('adminLogoutBtn').addEventListener('click', adminSignOut);
+    wireSignOutEverywhere('adminSignOutAllBtn', adminSignOut);
 
     // Load the agent directory once up front (see refreshAgentDirectory above);
     // everything below reads the synchronous loadAgents() cache and just gets

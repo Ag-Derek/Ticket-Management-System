@@ -13,9 +13,26 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 // Order matters on restore: children (referencing a FK) after their
-// parents. ticket_attachments references both tickets and ticket_comments,
-// so it goes last.
-const TABLES = ['users', 'agents', 'admins', 'auth_credentials', 'tickets', 'ticket_comments', 'ticket_attachments'];
+// parents. ticket_attachments references both tickets and ticket_comments;
+// ticket_reads references tickets. audit_logs, account_help_requests and
+// app_settings have no FKs.
+//
+// Deliberately left out: mfa_challenges and password_reset_tokens. Both
+// hold short-lived codes/links that are expired long before a restore
+// would ever happen, so there's nothing worth bringing back.
+const TABLES = [
+  'users', 'agents', 'admins', 'auth_credentials',
+  'tickets', 'ticket_comments', 'ticket_attachments', 'ticket_reads',
+  'audit_logs', 'account_help_requests', 'app_settings'
+];
+
+// Tables whose id is GENERATED ALWAYS AS IDENTITY. Restoring them needs
+// OVERRIDING SYSTEM VALUE to keep the original ids (comments, attachments
+// and read markers point at them), and their sequences moved past the
+// restored ids afterwards so the next insert doesn't collide.
+const IDENTITY_TABLES = new Set([
+  'auth_credentials', 'ticket_comments', 'ticket_attachments', 'audit_logs', 'account_help_requests'
+]);
 
 // Postgres has no single-file binary snapshot the way better-sqlite3's
 // db.backup() did — the database itself is managed by Supabase, not a
@@ -72,22 +89,35 @@ async function restoreBackup(name) {
   if (!buffer) throw new Error(`backup "${name}" not found`);
   const dump = JSON.parse(buffer.toString('utf8'));
 
+  // Only the tables this backup actually contains. A backup taken before
+  // audit_logs etc. were included must not wipe those tables on restore.
+  // (TRUNCATE ... CASCADE on tickets still empties ticket_reads, since its
+  // rows can't outlive the tickets they point at.)
+  const tables = TABLES.filter((t) => Array.isArray(dump.tables[t]));
+
   await db.withTransaction(async (client) => {
     // Reverse order for TRUNCATE so a FK doesn't block dropping a parent
     // before its children are already gone; CASCADE handles it anyway,
     // but this keeps the intent explicit.
-    for (const table of [...TABLES].reverse()) {
+    for (const table of [...tables].reverse()) {
       await client.query(`TRUNCATE TABLE ${table} CASCADE`);
     }
-    for (const table of TABLES) {
-      const rows = dump.tables[table] || [];
-      for (const row of rows) {
+    for (const table of tables) {
+      const overriding = IDENTITY_TABLES.has(table) ? 'OVERRIDING SYSTEM VALUE' : '';
+      for (const row of dump.tables[table]) {
         const columns = Object.keys(row);
         const placeholders = columns.map((_, i) => `$${i + 1}`).join(', ');
-        const values = columns.map((c) => row[c]);
+        // JSONB values come back from the dump as parsed objects; pg would
+        // send an array as a Postgres array, so stringify them explicitly.
+        const values = columns.map((c) => (row[c] !== null && typeof row[c] === 'object' ? JSON.stringify(row[c]) : row[c]));
         await client.query(
-          `INSERT INTO ${table} (${columns.join(', ')}) VALUES (${placeholders})`,
+          `INSERT INTO ${table} (${columns.join(', ')}) ${overriding} VALUES (${placeholders})`,
           values
+        );
+      }
+      if (IDENTITY_TABLES.has(table)) {
+        await client.query(
+          `SELECT setval(pg_get_serial_sequence('${table}', 'id'), COALESCE(MAX(id), 1), MAX(id) IS NOT NULL) FROM ${table}`
         );
       }
     }

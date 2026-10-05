@@ -87,11 +87,57 @@ async function uploadAllOrNone(items, upload) {
   return results.map((r) => r.value).filter(Boolean);
 }
 
+// Validates one incoming attachment payload and — if it carries content —
+// uploads it immediately, before any DB row exists for it. Accepts the
+// { filename, content_base64, mime_type? } shape the client sends; also
+// tolerates a bare filename string or an object with no content_base64
+// (nothing to upload, so stored_path stays null).
+async function normalizeIncomingAttachment(ticketId, a) {
+  if (!a) return null;
+  if (typeof a === 'string') {
+    const filename = a.trim();
+    return filename ? { filename, mime_type: null, size_bytes: null, stored_path: null } : null;
+  }
+  const filename = a.filename && String(a.filename).trim();
+  if (!filename) return null;
+  if (!a.content_base64) {
+    return { filename, mime_type: a.mime_type || null, size_bytes: null, stored_path: null };
+  }
+  const { storedPath, sizeBytes } = await saveAttachmentFile(ticketId, filename, a.content_base64);
+  return { filename, mime_type: a.mime_type || null, size_bytes: sizeBytes, stored_path: storedPath };
+}
+
+// The request body's attachment list (ticket attachments or chat files),
+// validated and uploaded all-or-nothing. Anything that isn't an array is
+// treated as no attachments. Throws a user-facing error (e.g. over the size
+// cap) for the route to return as a 400.
+async function uploadIncomingAttachments(ticketId, items) {
+  if (!Array.isArray(items)) return [];
+  return uploadAllOrNone(items, (a) => normalizeIncomingAttachment(ticketId, a));
+}
+
+// Inserts the rows for already-uploaded attachments, inside the caller's
+// transaction. `parent` is exactly one of { ticketId } or { commentId } —
+// ticket_attachments' CHECK constraint requires one and only one (see
+// schema.sql); a comment's attachment reaches its ticket through
+// comment_id -> ticket_comments.ticket_id.
+async function insertAttachmentRows(client, parent, attachments) {
+  for (const a of attachments) {
+    await client.query(
+      `INSERT INTO ticket_attachments (ticket_id, comment_id, filename, mime_type, size_bytes, stored_path)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [parent.ticketId || null, parent.commentId || null, a.filename, a.mime_type, a.size_bytes, a.stored_path]
+    );
+  }
+}
+
 module.exports = {
   saveAttachmentFile,
   fetchAttachmentFile,
   removeAttachmentFiles,
   uploadAllOrNone,
+  uploadIncomingAttachments,
+  insertAttachmentRows,
   sanitizeFilename,
   MAX_ATTACHMENT_BYTES,
   BUCKET
