@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db/connection');
 const { nextId } = require('../utils/ids');
-const { saveAttachmentFile, removeAttachmentFiles } = require('../utils/attachment-storage');
+const { saveAttachmentFile, removeAttachmentFiles, uploadAllOrNone } = require('../utils/attachment-storage');
 const { requireAuth } = require('../middleware/authenticate');
 const { requireTicketAccess } = require('../middleware/authorize');
 const { asyncHandler } = require('../utils/async-handler');
@@ -159,7 +159,7 @@ router.post('/', requireAuth(['user', 'admin']), asyncHandler(async (req, res) =
   let normalizedAttachments;
   try {
     normalizedAttachments = Array.isArray(attachments)
-      ? (await Promise.all(attachments.map((a) => normalizeIncomingAttachment(id, a)))).filter(Boolean)
+      ? await uploadAllOrNone(attachments, (a) => normalizeIncomingAttachment(id, a))
       : [];
   } catch (err) {
     return res.status(400).json({ error: err.message });
@@ -185,6 +185,9 @@ router.post('/', requireAuth(['user', 'admin']), asyncHandler(async (req, res) =
     });
   } catch (err) {
     console.error('POST /api/tickets: failed to persist ticket', err);
+    // The ticket row never committed, so nothing references these files.
+    removeAttachmentFiles(normalizedAttachments.map((a) => a.stored_path))
+      .catch((cleanupErr) => console.error('POST /api/tickets: storage cleanup failed', cleanupErr));
     return res.status(500).json({ error: 'failed to create ticket' });
   }
 

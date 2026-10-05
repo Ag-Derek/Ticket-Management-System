@@ -71,4 +71,28 @@ async function removeAttachmentFiles(storedPaths) {
   if (error) console.error('removeAttachmentFiles: failed to remove from storage', error);
 }
 
-module.exports = { saveAttachmentFile, fetchAttachmentFile, removeAttachmentFiles, sanitizeFilename, MAX_ATTACHMENT_BYTES, BUCKET };
+// Uploads every item with `upload` (which resolves to an attachment record
+// with a stored_path, or null to skip). All or nothing: if any one fails —
+// say the third file is over the size cap — the ones that already made it
+// to Storage are removed again before the error is rethrown, instead of
+// being left orphaned in the bucket.
+async function uploadAllOrNone(items, upload) {
+  const results = await Promise.allSettled(items.map(upload));
+  const failure = results.find((r) => r.status === 'rejected');
+  if (failure) {
+    const uploaded = results.filter((r) => r.status === 'fulfilled' && r.value).map((r) => r.value.stored_path);
+    await removeAttachmentFiles(uploaded).catch((err) => console.error('uploadAllOrNone: cleanup failed', err));
+    throw failure.reason;
+  }
+  return results.map((r) => r.value).filter(Boolean);
+}
+
+module.exports = {
+  saveAttachmentFile,
+  fetchAttachmentFile,
+  removeAttachmentFiles,
+  uploadAllOrNone,
+  sanitizeFilename,
+  MAX_ATTACHMENT_BYTES,
+  BUCKET
+};

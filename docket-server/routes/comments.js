@@ -1,6 +1,6 @@
 const express = require('express');
 const db = require('../db/connection');
-const { saveAttachmentFile } = require('../utils/attachment-storage');
+const { saveAttachmentFile, removeAttachmentFiles, uploadAllOrNone } = require('../utils/attachment-storage');
 const { requireAuth } = require('../middleware/authenticate');
 const { requireTicketAccess } = require('../middleware/authorize');
 const { asyncHandler } = require('../utils/async-handler');
@@ -108,7 +108,7 @@ router.post('/', requireAuth(), requireTicketAccess(TICKET_ACCESS), asyncHandler
   let normalizedFiles;
   try {
     normalizedFiles = Array.isArray(files)
-      ? (await Promise.all(files.map((f) => normalizeIncomingAttachment(req.params.ticketId, f)))).filter(Boolean)
+      ? await uploadAllOrNone(files, (f) => normalizeIncomingAttachment(req.params.ticketId, f))
       : [];
   } catch (err) {
     return res.status(400).json({ error: err.message });
@@ -154,6 +154,9 @@ router.post('/', requireAuth(), requireTicketAccess(TICKET_ACCESS), asyncHandler
     });
   } catch (err) {
     console.error('POST /api/tickets/:ticketId/comments: failed to persist comment', err);
+    // The comment never committed, so nothing references these files.
+    removeAttachmentFiles(normalizedFiles.map((f) => f.stored_path))
+      .catch((cleanupErr) => console.error('POST /api/tickets/:ticketId/comments: storage cleanup failed', cleanupErr));
     return res.status(500).json({ error: 'failed to post comment' });
   }
 
