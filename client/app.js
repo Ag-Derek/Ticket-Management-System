@@ -373,6 +373,128 @@ document.addEventListener('DOMContentLoaded', function () {
       });
   }
 
+  // Opens an attachment in an in-page preview window instead of forcing a
+  // download. Same auth-header fetch as downloadAttachment, then the blob is
+  // shown according to what it is (picked from the filename's extension,
+  // falling back to the stored mime type):
+  //   - images, PDFs, audio, video -> rendered from a blob: URL
+  //   - plain-text formats         -> read and shown as text (textContent,
+  //     so an uploaded .html/.js is displayed, never run)
+  //   - anything else              -> "no preview" plus the download button
+  // A blob: URL inherits this page's origin, so the blob is always re-typed
+  // to the format we decided on rather than trusting the uploader's
+  // mime_type — a file claiming text/html must never be loaded into a frame.
+  var PREVIEW_TYPES = {
+    image: { exts: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'], mime: /^image\// },
+    pdf: { exts: ['pdf'], mime: /^application\/pdf$/ },
+    video: { exts: ['mp4', 'webm', 'mov'], mime: /^video\// },
+    audio: { exts: ['mp3', 'wav', 'ogg', 'm4a'], mime: /^audio\// },
+    text: { exts: ['txt', 'log', 'csv', 'json', 'md', 'xml', 'yml', 'yaml', 'ini', 'html', 'htm', 'js', 'css', 'sql'], mime: /^text\/|^application\/json$/ }
+  };
+  var IMAGE_MIME_BY_EXT = { jpg: 'image/jpeg', jpeg: 'image/jpeg', svg: 'image/svg+xml' };
+
+  function previewKindFor(filename, mime) {
+    var ext = String(filename || '').toLowerCase().split('.').pop();
+    var kinds = Object.keys(PREVIEW_TYPES);
+    for (var i = 0; i < kinds.length; i++) {
+      if (PREVIEW_TYPES[kinds[i]].exts.indexOf(ext) !== -1) return { kind: kinds[i], ext: ext };
+    }
+    for (var j = 0; j < kinds.length; j++) {
+      if (PREVIEW_TYPES[kinds[j]].mime.test(mime || '')) return { kind: kinds[j], ext: ext };
+    }
+    return { kind: null, ext: ext };
+  }
+
+  function previewAttachment(id, filename) {
+    var objectUrl = null;
+    var overlay = document.createElement('div');
+    overlay.className = 'attachment-preview-overlay';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.innerHTML =
+      '<div class="attachment-preview-dialog">' +
+        '<div class="attachment-preview-header">' +
+          '<span class="attachment-preview-title"></span>' +
+          '<div class="attachment-preview-actions">' +
+            '<button class="btn-ghost btn-inline" type="button" data-preview-download>Download</button>' +
+            '<button class="attachment-preview-close" type="button" aria-label="Close preview">×</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="attachment-preview-body"><p class="attachment-preview-note">Loading preview…</p></div>' +
+      '</div>';
+    overlay.querySelector('.attachment-preview-title').textContent = '📎 ' + (filename || 'Attachment');
+    var body = overlay.querySelector('.attachment-preview-body');
+
+    function close() {
+      document.removeEventListener('keydown', onKey);
+      overlay.remove();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    }
+    function onKey(e) { if (e.key === 'Escape') close(); }
+    overlay.addEventListener('click', function (e) { if (e.target === overlay) close(); });
+    overlay.querySelector('.attachment-preview-close').addEventListener('click', close);
+    overlay.querySelector('[data-preview-download]').addEventListener('click', function () {
+      downloadAttachment(id, filename);
+    });
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(overlay);
+    overlay.querySelector('.attachment-preview-close').focus();
+
+    function showNote(text) {
+      body.innerHTML = '';
+      var p = document.createElement('p');
+      p.className = 'attachment-preview-note';
+      p.textContent = text;
+      body.appendChild(p);
+    }
+
+    fetch(API_BASE + '/api/attachments/' + encodeURIComponent(id), { headers: authHeaders() })
+      .then(function (response) {
+        if (!response.ok) throw new Error('Unable to load this file.');
+        return response.blob();
+      })
+      .then(function (blob) {
+        if (!document.body.contains(overlay)) return; // closed while loading
+        var detected = previewKindFor(filename, blob.type);
+        var el;
+        if (detected.kind === 'text') {
+          return blob.text().then(function (text) {
+            body.innerHTML = '';
+            var pre = document.createElement('pre');
+            pre.className = 'attachment-preview-text';
+            pre.textContent = text;
+            body.appendChild(pre);
+          });
+        }
+        if (detected.kind === 'image') {
+          var imageMime = IMAGE_MIME_BY_EXT[detected.ext] ||
+            (/^image\//.test(blob.type) ? blob.type : 'image/' + detected.ext);
+          objectUrl = URL.createObjectURL(new Blob([blob], { type: imageMime }));
+          el = document.createElement('img');
+          el.alt = filename || 'Attachment preview';
+        } else if (detected.kind === 'pdf') {
+          objectUrl = URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }));
+          el = document.createElement('iframe');
+          el.title = filename || 'Attachment preview';
+        } else if (detected.kind === 'video' || detected.kind === 'audio') {
+          objectUrl = URL.createObjectURL(blob);
+          el = document.createElement(detected.kind);
+          el.controls = true;
+        } else {
+          showNote('No preview is available for this file type. Use Download to open it.');
+          return;
+        }
+        el.className = 'attachment-preview-media attachment-preview-' + detected.kind;
+        el.src = objectUrl;
+        body.innerHTML = '';
+        body.appendChild(el);
+      })
+      .catch(function (err) {
+        console.error('Attachment preview error:', err);
+        showNote(err.message || 'Unable to load this file.');
+      });
+  }
+
   // Same "fetch with auth header, hand the browser a blob: URL" trick as
   // downloadAttachment, generalized for the admin console's report exports
   // — the server names the file via Content-Disposition, but that's only
@@ -422,7 +544,7 @@ document.addEventListener('DOMContentLoaded', function () {
         chip.href = '#';
         chip.addEventListener('click', function (e) {
           e.preventDefault();
-          downloadAttachment(id, name);
+          previewAttachment(id, name);
         });
       }
       chip.textContent = '📎 ' + name;
@@ -3146,7 +3268,7 @@ document.addEventListener('DOMContentLoaded', function () {
           var f = downloadableFiles[i];
           chip.addEventListener('click', function (e) {
             e.preventDefault();
-            downloadAttachment(chip.getAttribute('data-attachment-id'), f && f.filename);
+            previewAttachment(chip.getAttribute('data-attachment-id'), f && f.filename);
           });
         });
         chatThread.appendChild(bubble);
