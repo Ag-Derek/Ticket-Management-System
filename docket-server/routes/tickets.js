@@ -376,8 +376,11 @@ router.patch(
       // it was before this UPDATE:
       // - resolving counts as a first response if there hasn't been one;
       // - entering Waiting/Resolved pauses the resolution clock;
-      // - leaving a paused status (except to Closed, where the clock no
-      //   longer matters) pushes the due time back by the paused time.
+      // - reopening starts a fresh resolution SLA: the full window for the
+      //   ticket's priority, counted from the reopen;
+      // - leaving any other paused status (except to Closed, where the clock
+      //   no longer matters) pushes the due time back by the paused time.
+      const { resolutionMinutes } = slaFor(ticket.priority);
       await db.query(
         `UPDATE tickets
          SET status = $1,
@@ -391,7 +394,8 @@ router.patch(
              closed_at = CASE WHEN $5 = 'Closed' THEN now() ELSE closed_at END,
              first_responded_at = CASE WHEN $5 = 'Resolved' THEN COALESCE(first_responded_at, now())
                                        ELSE first_responded_at END,
-             resolution_due_at = CASE WHEN sla_paused_at IS NOT NULL AND NOT ($5 = ANY($8::text[])) AND $5 <> 'Closed'
+             resolution_due_at = CASE WHEN $5 = 'Reopened' THEN now() + make_interval(mins => $9)
+                                      WHEN sla_paused_at IS NOT NULL AND NOT ($5 = ANY($8::text[])) AND $5 <> 'Closed'
                                       THEN resolution_due_at + (now() - sla_paused_at)
                                       ELSE resolution_due_at END,
              sla_paused_at = CASE WHEN $5 = ANY($8::text[]) THEN COALESCE(sla_paused_at, now())
@@ -400,7 +404,7 @@ router.patch(
              updated_at = now()
          WHERE id = $7`,
         [status, resolution_summary || null, escalated_to || null, escalation_reason || null, status, suggestedAgentId, req.params.id,
-          SLA_PAUSED_STATUSES]
+          SLA_PAUSED_STATUSES, resolutionMinutes]
       );
     } catch (err) {
       console.error('PATCH /:id/status error:', err);

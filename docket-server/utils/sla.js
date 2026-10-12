@@ -13,6 +13,8 @@
 //   confirm or reopen. Leaving a paused status (other than to Closed) pushes
 //   resolution_due_at back by however long the pause lasted. The response
 //   clock never pauses.
+// - Reopening a resolved ticket starts a new resolution SLA: the due time is
+//   reset to the full resolution target for its priority, from the reopen.
 // - Resolution is met if the ticket was (most recently) resolved by its due
 //   time.
 
