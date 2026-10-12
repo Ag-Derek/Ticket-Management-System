@@ -2,7 +2,8 @@
 //   - notifyTicketCreated:  confirmation right after POST /api/tickets
 //   - notifyTicketResolved: the agent marked it Resolved — the customer is
 //     asked to confirm the fix or reopen from the portal
-//   - notifyTicketAssigned: tells an agent a ticket was assigned to them
+//   - notifyTicketAssigned: tells an agent a ticket was assigned to them,
+//     and tells the customer their ticket now has an agent on it
 //
 // All are fire-and-forget: the ticket change is already committed by the
 // time they run, so a Resend outage is logged, never turned into a failed
@@ -62,13 +63,13 @@ async function sendTicketCreated(ticketId) {
       `${greetingFor(t.requester_name)}\n\n` +
       `Thanks — we've logged your request and it's in the queue for the ${t.assigned_team || 'support'} team.\n\n` +
       rows.map(([label, value]) => `${label}: ${value}`).join('\n') +
-      `\n\nWe'll email you again once it's resolved.` +
+      `\n\nWe'll email you when an agent is assigned to it, and again once it's resolved.` +
       portalLinkText('Track it in your portal'),
     html:
       `<p>${escapeHtml(greetingFor(t.requester_name))}</p>` +
       `<p>Thanks — we've logged your request and it's in the queue for the ${escapeHtml(t.assigned_team || 'support')} team.</p>` +
       detailRowsHtml(rows) +
-      `<p>We'll email you again once it's resolved.</p>` +
+      `<p>We'll email you when an agent is assigned to it, and again once it's resolved.</p>` +
       portalLinkHtml('Track it in your portal')
   });
 }
@@ -140,6 +141,42 @@ async function sendTicketAssigned(ticketId) {
   });
 }
 
+// Customer-facing counterpart of sendTicketAssigned: lets the requester know
+// a named agent now owns their ticket. Agent names are already visible to
+// customers in the portal (GET /api/agents), so naming them here is no leak.
+async function sendTicketAssignedToRequester(ticketId) {
+  const t = await loadTicketWithRequester(ticketId);
+  if (!t || !t.requester_email || !t.assigned_agent_id) return;
+
+  const agentResult = await db.query('SELECT full_name FROM agents WHERE id = $1', [t.assigned_agent_id]);
+  const agentName = (agentResult.rows[0] && agentResult.rows[0].full_name) || 'One of our agents';
+
+  const rows = [
+    ['Ticket', t.id],
+    ['Subject', t.subject],
+    ['Assigned to', agentName],
+    ['Status', t.status],
+    ['Target', t.sla_summary || '—']
+  ];
+
+  await sendEmail({
+    to: t.requester_email,
+    subject: `[${t.id}] Assigned to an agent: ${t.subject}`,
+    text:
+      `${greetingFor(t.requester_name)}\n\n` +
+      `Good news — your ticket ${t.id} ("${t.subject}") has been assigned to ${agentName}, who will be working on it.\n\n` +
+      rows.map(([label, value]) => `${label}: ${value}`).join('\n') +
+      `\n\nWe'll email you again once it's resolved.` +
+      portalLinkText('Track it in your portal'),
+    html:
+      `<p>${escapeHtml(greetingFor(t.requester_name))}</p>` +
+      `<p>Good news — your ticket <strong>${escapeHtml(t.id)}</strong> (“${escapeHtml(t.subject)}”) has been assigned to ${escapeHtml(agentName)}, who will be working on it.</p>` +
+      detailRowsHtml(rows) +
+      `<p>We'll email you again once it's resolved.</p>` +
+      portalLinkHtml('Track it in your portal')
+  });
+}
+
 function fireAndForget(label, fn, ticketId) {
   fn(ticketId).catch((err) => {
     console.error(`[notifications] ${label} email for ${ticketId} failed:`, err);
@@ -149,5 +186,9 @@ function fireAndForget(label, fn, ticketId) {
 module.exports = {
   notifyTicketCreated: (ticketId) => fireAndForget('ticket-created', sendTicketCreated, ticketId),
   notifyTicketResolved: (ticketId) => fireAndForget('ticket-resolved', sendTicketResolved, ticketId),
-  notifyTicketAssigned: (ticketId) => fireAndForget('ticket-assigned', sendTicketAssigned, ticketId)
+  // Two separate sends so a failure on one side doesn't stop the other.
+  notifyTicketAssigned: (ticketId) => {
+    fireAndForget('ticket-assigned', sendTicketAssigned, ticketId);
+    fireAndForget('ticket-assigned-requester', sendTicketAssignedToRequester, ticketId);
+  }
 };
