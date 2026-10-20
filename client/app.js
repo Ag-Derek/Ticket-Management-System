@@ -2320,6 +2320,324 @@ document.addEventListener('DOMContentLoaded', function () {
       });
     });
 
+    // ---- Help bot (portal.html) ----
+    // A scripted assistant with no AI service behind it: it matches what the
+    // customer types against a fixed set of topics and answers from the
+    // tickets this page already holds in `all`, so it never makes a request
+    // of its own. Anything it can't handle is pointed at a ticket or the
+    // agent chat. The SLA wording mirrors docket-server/utils/sla.js.
+    (function startHelpBot() {
+      if (!portalUser || !portalUser.id) return;
+
+      var TICKET_ID_RE = /\bTKT-\d{4}-\d{6}\b/i;
+      var STATUS_HELP = {
+        'Created': "We've received it and it's waiting to be assigned to an agent.",
+        'Assigned': 'An agent has it and will pick it up shortly.',
+        'In Progress': 'An agent is working on it now.',
+        'Waiting': "The agent is waiting on a reply from you. Check the ticket's messages. The fix-time clock is paused until you answer.",
+        'Escalated': "It's been passed to a specialist team.",
+        'Resolved': 'The agent thinks it is fixed. Please confirm the fix, or reopen it if the problem is still there.',
+        'Reopened': "You reopened it, so it's back with the support team on a fresh fix-time target.",
+        'Closed': "It's finished. You can rate how we did."
+      };
+      // Filled from GET /api/tickets/sla-targets (utils/sla.js on the
+      // server), so the bot never quotes targets the server doesn't enforce.
+      // Stays null if the fetch fails; slaHelp() then leaves the table out.
+      var slaTargets = null;
+      fetch(API_BASE + '/api/tickets/sla-targets', { headers: authHeaders() })
+        .then(function (response) { return response.ok ? response.json() : null; })
+        .then(function (rows) { if (Array.isArray(rows)) slaTargets = rows; })
+        .catch(function (err) { console.error('SLA targets load error:', err); });
+
+      document.body.classList.add('has-helpbot');
+
+      var launcher = document.createElement('button');
+      launcher.type = 'button';
+      launcher.className = 'helpbot-launcher';
+      launcher.setAttribute('aria-label', 'Open the help assistant');
+      launcher.setAttribute('aria-expanded', 'false');
+      launcher.innerHTML = '<span aria-hidden="true">?</span>';
+
+      var panel = document.createElement('div');
+      panel.className = 'helpbot-panel';
+      panel.setAttribute('role', 'dialog');
+      panel.setAttribute('aria-label', 'Help assistant');
+      panel.hidden = true;
+      panel.innerHTML =
+        '<div class="helpbot-head">' +
+          '<div><p class="helpbot-title">Help assistant</p><p class="helpbot-sub">Automated · answers from your tickets</p></div>' +
+          '<button type="button" class="helpbot-close" aria-label="Close the help assistant">✕</button>' +
+        '</div>' +
+        '<div class="helpbot-log" aria-live="polite"></div>' +
+        '<form class="helpbot-form">' +
+          '<input type="text" class="helpbot-input" maxlength="300" autocomplete="off" placeholder="Ask about your tickets…" aria-label="Message the help assistant">' +
+          '<button type="submit" class="helpbot-send">Send</button>' +
+        '</form>';
+
+      document.body.appendChild(panel);
+      document.body.appendChild(launcher);
+
+      var log = panel.querySelector('.helpbot-log');
+      var form = panel.querySelector('.helpbot-form');
+      var input = panel.querySelector('.helpbot-input');
+      var greeted = false;
+
+      function openBot() {
+        panel.hidden = false;
+        launcher.setAttribute('aria-expanded', 'true');
+        launcher.classList.add('open');
+        if (!greeted) { greeted = true; greet(); }
+        input.focus();
+      }
+      function closeBot() {
+        panel.hidden = true;
+        launcher.setAttribute('aria-expanded', 'false');
+        launcher.classList.remove('open');
+        launcher.focus();
+      }
+      launcher.addEventListener('click', function () { panel.hidden ? openBot() : closeBot(); });
+      panel.querySelector('.helpbot-close').addEventListener('click', closeBot);
+      panel.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeBot(); });
+
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var text = input.value.trim();
+        if (!text) return;
+        input.value = '';
+        handle(text);
+      });
+
+      // ---- Rendering ----
+      // Bot messages are HTML strings; every value that came from a ticket or
+      // the profile goes through escapeHtml() where it's concatenated in.
+      function addMessage(who, html) {
+        var el = document.createElement('div');
+        el.className = 'helpbot-msg helpbot-' + who;
+        el.innerHTML = html;
+        log.appendChild(el);
+        log.scrollTop = log.scrollHeight;
+      }
+
+      // Each choice is { label, run } (answered in the chat) or { label, href }
+      // (navigates away).
+      function addChoices(choices) {
+        var row = document.createElement('div');
+        row.className = 'helpbot-choices';
+        choices.forEach(function (c) {
+          var el;
+          if (c.href) {
+            el = document.createElement('a');
+            el.href = c.href;
+          } else {
+            el = document.createElement('button');
+            el.type = 'button';
+            el.addEventListener('click', function () { handle(c.label, c.run); });
+          }
+          el.className = 'helpbot-chip';
+          el.textContent = c.label;
+          row.appendChild(el);
+        });
+        log.appendChild(row);
+        log.scrollTop = log.scrollHeight;
+      }
+
+      function reply(html, choices) {
+        addMessage('bot', html);
+        if (choices && choices.length) addChoices(choices);
+      }
+
+      // Echoes what the customer said, clears the old choice buttons so only
+      // the latest set is clickable, then answers after a short pause.
+      function handle(text, run) {
+        log.querySelectorAll('.helpbot-choices').forEach(function (row) { row.remove(); });
+        addMessage('user', escapeHtml(text));
+        setTimeout(function () { (run || answer)(text); }, 300);
+      }
+
+      // ---- Ticket helpers ----
+      function isOpen(t) { return t.status !== 'Resolved' && t.status !== 'Closed'; }
+      function findTicket(id) { return all.filter(function (t) { return t.id.toUpperCase() === id; })[0]; }
+      function chatLink(t) { return 'ticket-chat.html?ticket=' + encodeURIComponent(t.id) + '&role=customer'; }
+      function shortSubject(t) { return t.subject.length > 26 ? t.subject.slice(0, 25) + '…' : t.subject; }
+      function ticketLine(t) { return '<strong>' + escapeHtml(t.id) + '</strong> · ' + escapeHtml(t.subject) + ' (' + escapeHtml(t.status) + ')'; }
+      function ticketChoice(t) { return { label: shortSubject(t) + ' · ' + t.status, run: function () { describeTicket(t.id.toUpperCase()); } }; }
+
+      // Opens the ticket in the page's detail card and scrolls to `targetId`
+      // (or the card itself), so the customer can use the real buttons there.
+      function showOnPage(t, targetId) {
+        showTicketDetails(t);
+        var target = (targetId && document.getElementById(targetId)) || dash;
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+
+      function menuChoices() {
+        return [
+          { label: 'My tickets', run: summarize },
+          { label: 'Talk to an agent', run: contactAgent },
+          { label: 'Report a new problem', run: newTicket },
+          { label: 'How long will it take?', run: slaHelp },
+          { label: 'What do the statuses mean?', run: function () { statusHelp(''); } }
+        ];
+      }
+
+      // ---- Answers ----
+      function greet() {
+        var first = (portalUser.name || '').trim().split(/\s+/)[0];
+        var html = 'Hi' + (first ? ' ' + escapeHtml(first) : '') + ". I'm an automated assistant. I can look up your tickets and point you to the right place.";
+        var waiting = all.filter(function (t) { return t.status === 'Resolved' || t.status === 'Waiting'; });
+        if (waiting.length) {
+          html += '<br><br><strong>' + waiting.length + (waiting.length === 1 ? ' ticket is' : ' tickets are') + ' waiting on you:</strong><br>' +
+            waiting.map(ticketLine).join('<br>');
+        }
+        reply(html, menuChoices());
+      }
+
+      function summarize() {
+        if (!all.length) {
+          return reply("You don't have any tickets yet.", [{ label: 'Report a new problem', run: newTicket }]);
+        }
+        var open = all.filter(isOpen);
+        var resolved = all.filter(function (t) { return t.status === 'Resolved'; });
+        var closed = all.filter(function (t) { return t.status === 'Closed'; });
+        var html = 'You have <strong>' + all.length + '</strong> ticket' + (all.length === 1 ? '' : 's') + ': ' +
+          open.length + ' open, ' + resolved.length + ' resolved (waiting for you to confirm), ' + closed.length + ' closed.';
+        if (open.length) html += '<br><br>Open:<br>' + open.slice(0, 5).map(ticketLine).join('<br>');
+        if (open.length > 5) html += '<br>…and ' + (open.length - 5) + ' more in "Your tickets" below.';
+        var pick = open.concat(resolved).slice(0, 4);
+        reply(html + (pick.length ? '<br><br>Pick one for details:' : ''), pick.map(ticketChoice));
+      }
+
+      function describeTicket(id) {
+        var t = findTicket(id);
+        if (!t) {
+          return reply("I can't find <strong>" + escapeHtml(id) + '</strong> among your tickets. Check the number, or pick one of yours:',
+            all.slice(0, 4).map(ticketChoice));
+        }
+        var now = Date.now();
+        var html = ticketLine(t) + '<br>' + escapeHtml(STATUS_HELP[t.status] || '') +
+          '<br><br>Priority: ' + escapeHtml(t.priority) +
+          '<br>Team: ' + escapeHtml(t.team || '—') +
+          '<br>Agent: ' + escapeHtml(t.assignedAgent || 'not assigned yet');
+        if (isOpen(t) && t.resolutionDueAt) {
+          var alertInfo = slaAlert(t, now);
+          if (t.slaPausedAt) html += '<br>Fix-time target: paused while we wait on you.';
+          else html += '<br>Fix-time target: ' + escapeHtml(new Date(t.resolutionDueAt).toLocaleString()) + ' (' + escapeHtml(fmtSlaRelative(new Date(t.resolutionDueAt).getTime(), now)) + ')';
+          if (alertInfo && alertInfo.level === 'breached') html += "<br><strong>This one is past its target.</strong> Sending the agent a message will flag it.";
+        }
+
+        var choices = [];
+        if (t.status === 'Resolved') choices.push({ label: 'Confirm or reopen it', run: function () { showOnPage(t, 'resolutionRow'); reply('It\'s open on the page. Use <strong>Confirm fix ✓</strong> if it works, or <strong>Reopen ticket</strong> if it doesn\'t.'); } });
+        if (t.status === 'Closed' && !t.csat) choices.push({ label: 'Rate this ticket', run: function () { showOnPage(t, 'csatPanel'); reply('The rating form is open on the page.'); } });
+        if (t.status !== 'Closed') choices.push({ label: 'Message the agent', href: chatLink(t) });
+        choices.push({ label: 'Show it on the page', run: function () { showOnPage(t); reply("Done, it's open on the page."); } });
+        reply(html, choices);
+      }
+
+      function contactAgent() {
+        var open = all.filter(function (t) { return t.status !== 'Closed'; });
+        if (!open.length) {
+          return reply("You don't have an open ticket to message on. Create one and an agent will reply on it.",
+            [{ label: 'Create a ticket', href: 'ticket.html' }]);
+        }
+        reply('To talk to a person, message the agent on the ticket. Which one is it about?',
+          open.slice(0, 4).map(function (t) { return { label: shortSubject(t), href: chatLink(t) }; })
+            .concat([{ label: "It's something new", href: 'ticket.html' }]));
+      }
+
+      function newTicket() {
+        reply('Report it with the new ticket form. Pick the closest category (Network, Application, Hardware, or Access &amp; Identity) and a priority, and describe what happened. Attach screenshots if you have them.',
+          [{ label: 'Create a ticket', href: 'ticket.html' }]);
+      }
+
+      function reopenHelp() {
+        var resolved = all.filter(function (t) { return t.status === 'Resolved'; });
+        var html = 'You can reopen a ticket while it\'s <strong>Resolved</strong>. Open it and press <strong>Reopen ticket</strong>. ' +
+          'A <strong>Closed</strong> ticket can\'t be reopened, so create a new one and mention the old ticket number.';
+        var choices = resolved.slice(0, 4).map(function (t) {
+          return { label: 'Reopen ' + shortSubject(t), run: function () { showOnPage(t, 'resolutionRow'); reply("It's open on the page. Press <strong>Reopen ticket</strong>."); } };
+        });
+        choices.push({ label: 'Create a ticket', href: 'ticket.html' });
+        reply(html, choices);
+      }
+
+      function closeHelp() {
+        var resolved = all.filter(function (t) { return t.status === 'Resolved'; });
+        var unrated = all.filter(function (t) { return t.status === 'Closed' && !t.csat; });
+        if (!resolved.length && !unrated.length) {
+          return reply("Nothing is waiting for you to confirm or rate right now. Once an agent marks a ticket Resolved, you'll be able to confirm the fix and then rate it.");
+        }
+        var choices = resolved.slice(0, 3).map(function (t) {
+          return { label: 'Confirm ' + shortSubject(t), run: function () { showOnPage(t, 'resolutionRow'); reply("It's open on the page. Press <strong>Confirm fix ✓</strong>."); } };
+        }).concat(unrated.slice(0, 3).map(function (t) {
+          return { label: 'Rate ' + shortSubject(t), run: function () { showOnPage(t, 'csatPanel'); reply('The rating form is open on the page.'); } };
+        }));
+        reply('Confirming a fix closes the ticket. After that you can rate how we did.', choices);
+      }
+
+      function slaHelp() {
+        var html = 'Every ticket has two targets, set by its priority: a first reply and a fix.<br>' +
+          (slaTargets
+            ? slaTargets.map(function (r) {
+                return '<strong>' + escapeHtml(r.priority) + '</strong>: reply ' + escapeHtml(r.response) + ', fix ' + escapeHtml(r.resolution);
+              }).join('<br>')
+            : "I couldn't load the target table just now, but each ticket's own target is shown when you pick it.") +
+          '<br><br>The clocks run around the clock. The fix clock pauses while a ticket is Waiting on you, and while it\'s Resolved and waiting for you to confirm or reopen.';
+        var open = all.filter(isOpen);
+        reply(html + (open.length ? '<br><br>Want the target for one of yours?' : ''), open.slice(0, 4).map(ticketChoice));
+      }
+
+      function statusHelp(q) {
+        // Whole words, so "unassigned" doesn't pick up Assigned.
+        var named = Object.keys(STATUS_HELP).filter(function (s) { return has(q, [s.toLowerCase()]); });
+        var list = named.length ? named : Object.keys(STATUS_HELP);
+        reply(list.map(function (s) { return '<strong>' + s + '</strong>: ' + escapeHtml(STATUS_HELP[s]); }).join('<br>'));
+      }
+
+      function accountHelp() {
+        reply('Your account:<br>Name: ' + escapeHtml(portalUser.name) +
+          '<br>Email: ' + escapeHtml(portalUser.email) +
+          '<br>ID: ' + escapeHtml(portalUser.id) +
+          "<br><br>You can't change these from the portal yet. Message an agent on any ticket and they'll update them for you.",
+          [{ label: 'Talk to an agent', run: contactAgent }]);
+      }
+
+      function signOutHelp() {
+        reply('Use <strong>Logout</strong> at the top right to sign out here. <strong>Sign out all devices</strong> ends your session everywhere, including this browser. Use it if you signed in on a shared or lost device.');
+      }
+
+      function fallback() {
+        reply("Sorry, I'm a simple assistant and didn't catch that. Try a ticket number (like TKT-2026-123456), or pick a topic:", menuChoices());
+      }
+
+      // Whole-word match, so "hi" doesn't fire on "this".
+      function has(q, words) {
+        return words.some(function (w) {
+          return new RegExp('\\b' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b').test(q);
+        });
+      }
+
+      // Topic order matters: the specific ones ("reopen", "what does waiting
+      // mean") are checked before the broad ones ("open", "ticket").
+      function answer(text) {
+        var q = text.toLowerCase();
+        var idMatch = text.match(TICKET_ID_RE);
+        if (idMatch) return describeTicket(idMatch[0].toUpperCase());
+        if (has(q, ['sign out', 'log out', 'logout', 'signout', 'devices'])) return signOutHelp();
+        if (has(q, ['reopen', 'not fixed', 'still broken', 'came back', 'happening again'])) return reopenHelp();
+        if (has(q, ['mean', 'means', 'meaning', 'statuses'])) return statusHelp(q);
+        if (has(q, ['sla', 'how long', 'when will', 'eta', 'deadline', 'due', 'target', 'overdue', 'late'])) return slaHelp();
+        if (has(q, ['confirm', 'rate', 'rating', 'feedback', 'stars', 'close'])) return closeHelp();
+        if (has(q, ['human', 'agent', 'person', 'someone', 'speak', 'talk', 'message', 'chat', 'contact', 'call'])) return contactAgent();
+        if (has(q, ['status', 'my tickets', 'my ticket', 'progress', 'update', 'open tickets'])) return summarize();
+        if (has(q, ['new', 'create', 'raise', 'report', 'submit', 'problem', 'issue', 'broken', 'not working', 'error', 'help me'])) return newTicket();
+        if (has(q, ['ticket', 'tickets'])) return summarize();
+        if (has(q, ['email', 'account', 'name', 'phone', 'profile', 'details', 'department'])) return accountHelp();
+        if (has(q, ['thank', 'thanks', 'cheers'])) return reply("You're welcome. Anything else?", menuChoices());
+        if (has(q, ['hi', 'hello', 'hey', 'morning', 'afternoon', 'evening', 'menu', 'help', 'start'])) return reply('What can I help with?', menuChoices());
+        fallback();
+      }
+    })();
+
     // ---- FR-4: live notifications on status change ----
     // Status changes happen on the agent dashboard (a different tab/window),
     // so this tab needs to notice the shared localStorage record changing

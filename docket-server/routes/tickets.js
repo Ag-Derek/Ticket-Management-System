@@ -233,6 +233,16 @@ router.get('/', requireAuth(), asyncHandler(async (req, res) => {
   }
 }));
 
+// GET /api/tickets/sla-targets — the per-priority targets from utils/sla.js,
+// most urgent first, so the portal's help assistant quotes the numbers the
+// server enforces instead of keeping its own copy. Must stay above /:id.
+router.get('/sla-targets', requireAuth(), (req, res) => {
+  res.json(VALID_PRIORITIES.slice().reverse().map((priority) => {
+    const sla = slaFor(priority);
+    return { priority, response: sla.response, resolution: sla.resolution };
+  }));
+});
+
 // GET /api/tickets/:id  (includes comments + attachment_count + attachments)
 router.get(
   '/:id',

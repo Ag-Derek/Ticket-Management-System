@@ -571,6 +571,70 @@ h1.display{
 @keyframes badgePulse{0%{box-shadow:0 0 0 0 rgba(224,116,42,.55);}100%{box-shadow:0 0 0 10px rgba(224,116,42,0);}}
 .status-badge.pulse{animation:badgePulse 1s ease;}
 
+/* Help bot (portal.html): launcher in the bottom-right corner, so the
+   toast stacks that share that corner sit above it while it's on the page */
+body.has-helpbot .status-toast-wrap{bottom:96px;}
+body.has-helpbot .toast-stack{bottom:96px;}
+.helpbot-launcher{
+  position:fixed;right:28px;bottom:28px;z-index:90;
+  width:56px;height:56px;border-radius:50%;border:none;cursor:pointer;
+  background:linear-gradient(135deg,var(--blue-1),var(--blue-2));color:#FFFFFF;
+  font-family:'Big Shoulders Display',sans-serif;font-weight:800;font-size:26px;
+  box-shadow:0 12px 28px rgba(8,56,128,.35);
+  transition:transform .15s ease;
+}
+.helpbot-launcher:hover{transform:translateY(-2px);}
+.helpbot-launcher.open{transform:rotate(-8deg);}
+.helpbot-launcher:focus-visible{outline:2px solid var(--ink);outline-offset:3px;}
+.helpbot-panel{
+  position:fixed;right:28px;bottom:96px;z-index:90;
+  width:min(370px,calc(100vw - 32px));height:min(520px,calc(100vh - 140px));
+  display:flex;flex-direction:column;
+  background:var(--paper-alt);border:1px solid var(--line);border-radius:var(--radius);
+  box-shadow:0 24px 60px rgba(21,20,15,.22);overflow:hidden;
+  animation:toast-in .2s ease;
+}
+.helpbot-panel[hidden]{display:none;}
+.helpbot-head{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:16px 18px;background:var(--ink);color:#FFFFFF;
+}
+.helpbot-head p{margin:0;}
+.helpbot-title{font-weight:600;font-size:14.5px;}
+.helpbot-sub{font-family:'IBM Plex Mono',monospace;font-size:11px;color:#B9B7AC;margin-top:2px !important;}
+.helpbot-close{border:0;background:none;color:#FFFFFF;font-size:16px;cursor:pointer;padding:4px 6px;border-radius:6px;}
+.helpbot-close:hover{background:rgba(255,255,255,.12);}
+.helpbot-log{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px;}
+.helpbot-msg{
+  max-width:88%;padding:10px 13px;border-radius:14px;
+  font-size:13.5px;line-height:1.5;word-break:break-word;
+}
+.helpbot-bot{align-self:flex-start;background:var(--white);border:1px solid var(--line);border-bottom-left-radius:4px;}
+.helpbot-user{align-self:flex-end;background:linear-gradient(135deg,var(--blue-1),var(--blue-2));color:#FFFFFF;border-bottom-right-radius:4px;}
+.helpbot-choices{display:flex;flex-wrap:wrap;gap:6px;}
+.helpbot-chip{
+  font-family:'Inter',sans-serif;font-size:12.5px;font-weight:500;
+  padding:7px 12px;border-radius:999px;cursor:pointer;text-decoration:none;
+  background:transparent;color:var(--blue-2);border:1px solid var(--blue-2);
+}
+.helpbot-chip:hover{background:var(--blue-2);color:#FFFFFF;}
+.helpbot-form{display:flex;gap:8px;padding:12px;border-top:1px solid var(--line);background:var(--white);}
+.helpbot-input{
+  flex:1;min-width:0;font-family:'Inter',sans-serif;font-size:14px;
+  padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--paper-alt);color:var(--ink);
+}
+.helpbot-input:focus{outline:2px solid var(--blue-2);outline-offset:1px;border-color:transparent;}
+.helpbot-send{
+  font-family:'Inter',sans-serif;font-weight:600;font-size:13px;
+  padding:0 16px;border:none;border-radius:10px;cursor:pointer;
+  background:var(--ink);color:#FFFFFF;
+}
+@media (max-width:480px){
+  .helpbot-launcher{right:16px;bottom:16px;}
+  .helpbot-panel{right:16px;left:16px;bottom:84px;width:auto;}
+  body.has-helpbot .status-toast-wrap,body.has-helpbot .toast-stack{bottom:84px;}
+}
+
 /* Live status-change toasts (portal.html) */
 .status-toast-wrap{
   position:fixed;bottom:28px;right:28px;z-index:80;
