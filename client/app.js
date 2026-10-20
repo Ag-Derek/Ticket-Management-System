@@ -1816,6 +1816,20 @@ document.addEventListener('DOMContentLoaded', function () {
       document.getElementById('requesterLine').textContent = 'Filing as ' + user.name + ' (' + user.id + ')';
     }
 
+    // The portal's help bot links here with ?priority=, ?category= and
+    // ?service= to pre-fill the form. A select only takes a value that's one
+    // of its own options; the customer can still change anything.
+    var prefill = new URLSearchParams(window.location.search);
+    ['priority', 'category'].forEach(function (key) {
+      var select = document.getElementById(key);
+      var value = prefill.get(key);
+      if (select && value && Array.prototype.some.call(select.options, function (o) { return o.value === value; })) {
+        select.value = value;
+      }
+    });
+    var serviceInput = document.getElementById('service');
+    if (serviceInput && prefill.get('service')) serviceInput.value = prefill.get('service').slice(0, 120);
+
     var files = [];
     var fileInput = document.getElementById('attachments');
     var fileList = document.getElementById('fileList');
@@ -2322,10 +2336,10 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // ---- Help bot (portal.html) ----
     // A scripted assistant with no AI service behind it: it matches what the
-    // customer types against a fixed set of topics and answers from the
-    // tickets this page already holds in `all`, so it never makes a request
-    // of its own. Anything it can't handle is pointed at a ticket or the
-    // agent chat. The SLA wording mirrors docket-server/utils/sla.js.
+    // customer types against the rules below and answers from the tickets
+    // this page already holds in `all`. Its only request is the SLA target
+    // table. Anything it can't handle is pointed at a ticket or the agent
+    // chat. To teach it something, edit the "Rules" lists.
     (function startHelpBot() {
       if (!portalUser || !portalUser.id) return;
 
@@ -2348,6 +2362,135 @@ document.addEventListener('DOMContentLoaded', function () {
         .then(function (response) { return response.ok ? response.json() : null; })
         .then(function (rows) { if (Array.isArray(rows)) slaTargets = rows; })
         .catch(function (err) { console.error('SLA targets load error:', err); });
+
+      // " (reply 15 min, fix 4 hrs)" for a priority, or '' until slaTargets loads.
+      function slaText(priority) {
+        var row = (slaTargets || []).filter(function (r) { return r.priority === priority; })[0];
+        return row ? ' (reply ' + escapeHtml(row.response) + ', fix ' + escapeHtml(row.resolution) + ')' : '';
+      }
+
+      // ---- Rules: edit these to change what the bot knows ----
+      // `words` are matched as whole words or phrases, in lower case.
+      // `answer` is HTML written here (never user input), so tags like
+      // <strong> and <br> work; it can also be a function returning HTML when
+      // the text depends on loaded data. `buttons` are links: { label, href }.
+
+      // Fixed answers. The first rule whose words appear in the message wins.
+      var FAQ_RULES = [
+        {
+          words: ['password', 'reset password', 'forgot password', 'sign in', 'sign-in', 'log in', 'login', 'verification code', 'sign-in code', 'login code', "can't get in"],
+          answer: "There are no passwords. Each time you sign in, we email a 6-digit code to your account's email address. " +
+            "If it doesn't arrive, check your spam folder or use <strong>Resend</strong> on the code screen. " +
+            "Can't remember which email you used? Use <strong>Find my account</strong> on the sign-in page and our team will help."
+        },
+        {
+          words: ['attach', 'attachment', 'attachments', 'upload', 'screenshot', 'screenshots', 'file', 'files', 'logs'],
+          answer: "You can attach screenshots, logs or documents on the new ticket form, up to <strong>5MB per file</strong>. " +
+            "You can also send files to the agent in a ticket's chat.",
+          buttons: [{ label: 'Create a ticket', href: 'ticket.html' }]
+        },
+        {
+          words: ['category', 'categories', 'which team', 'team', 'teams', 'department'],
+          answer: 'Pick the category closest to the problem. It decides which team gets the ticket:<br>' +
+            '<strong>Network</strong> (internet, Wi-Fi, VPN, connectivity): Network Support<br>' +
+            '<strong>Application</strong> (software errors, products like Symphony or RiskFlow): Application Support<br>' +
+            '<strong>Hardware</strong> (laptops, printers, devices): Infrastructure<br>' +
+            '<strong>Access &amp; Identity</strong> (accounts, permissions, locked out): Access &amp; Identity',
+          buttons: [{ label: 'Create a ticket', href: 'ticket.html' }]
+        },
+        {
+          words: ['priority', 'priorities', 'which priority', 'how urgent'],
+          answer: function () {
+            return 'Choose the priority by how badly work is blocked:<br>' +
+              '<strong>Critical</strong>: a service is down or many people are stopped' + slaText('Critical') + '<br>' +
+              '<strong>High</strong>: you are blocked with no workaround' + slaText('High') + '<br>' +
+              '<strong>Medium</strong>: it is slowing you down but there is a workaround' + slaText('Medium') + '<br>' +
+              '<strong>Low</strong>: a question or minor issue' + slaText('Low');
+          }
+        }
+      ];
+
+      // Product knowledge. Until a product has a `summary` or `topics`, the
+      // bot says it doesn't have that product's guides yet and offers an
+      // agent instead. Each topic: { title, words, answer }.
+      var PRODUCTS = [
+        { name: 'Symphony', words: ['symphony'], summary: null, topics: [] },
+        // From "Riskflow Calibre Treasury Management Application Hardware
+        // Architecture" (2 pages). Topics are checked in order, so the
+        // specific ones come before the general overview words.
+        {
+          name: 'RiskFlow',
+          words: ['riskflow', 'risk flow', 'risk-flow', 'calibre', 'treasury management'],
+          summary: '<strong>RiskFlow Calibre Treasury Management</strong> handles cash management, liquidity planning and FX trading, ' +
+            'and connects securely to your Core Banking system. It runs on a secure multi-tier setup: firewalls, load balancers, ' +
+            'application servers and a database cluster.',
+          topics: [
+            {
+              title: 'Server setup & DR site',
+              words: ['how many servers', 'server requirements', 'hardware requirements', 'requirements', 'dr', 'disaster recovery', 'recovery site', 'data recovery', 'co-habit', 'cohabit', 'same server', 'linux', 'docker', 'virtual', 'physical', 'vm'],
+              answer: '• <strong>Treasury Web Server 1</strong> and <strong>Treasury App Server 1</strong> can share the same physical or virtual server.<br>' +
+                '• <strong>Treasury Web Server 2</strong> and <strong>Treasury App Server 2</strong> can share the same physical or virtual server at the Data Recovery site.<br>' +
+                '• The <strong>Linux service</strong> can run as a Docker service on Treasury App Server 1 if that server is physical. If App Server 1 is virtual, the Linux server has to be a separate server.'
+            },
+            {
+              title: 'Firewalls & load balancers',
+              words: ['firewall', 'firewalls', 'waf', 'web application firewall', 'load balancer', 'load balancers', 'load balancing', 'presentation layer', 'dmz'],
+              answer: '• <strong>Web Application Firewall (WAF)</strong>: inspects incoming internet and intranet traffic for malicious attacks.<br>' +
+                '• <strong>Load balancers</strong>: spread user requests evenly across the web and presentation servers.<br>' +
+                '• <strong>Internal firewall</strong>: sits between the web servers and the app servers, separating the DMZ from the secure internal bank network.'
+            },
+            {
+              title: 'Security & HSM',
+              words: ['hsm', 'hardware security module', 'security', 'secure', 'keys', 'cryptographic', 'encryption', 'signing', 'certificates'],
+              answer: '• <strong>Hardware Security Module (HSM)</strong>: stores the cryptographic keys and handles secure message signing for financial transactions. It connects to the Treasury App Servers.<br>' +
+                '• <strong>Internal firewalls</strong>: separate the DMZ from the secure internal bank network.<br>' +
+                '• <strong>WAF</strong>: screens incoming traffic for attacks before it reaches the application.'
+            },
+            {
+              title: 'Core Banking integration',
+              words: ['core banking', 't24', 'esb', 'enterprise service bus', 'api gateway', 'api', 'apis', 'integration', 'integrate', 'interface', 'mq', 'iso 8583', 'iso 20022', '8583', '20022', 'asp.net'],
+              answer: '• <strong>Enterprise Service Bus (ESB) / API Gateway</strong> (ASP.NET API): translates and routes messages between Calibre and the Core Banking application.<br>' +
+                '• <strong>Core Banking interface</strong>: connects securely over dedicated enterprise links (MQ, ISO 8583/20022, or secure APIs) directly to the Core Banking host. The Core Banking system shown is <strong>T24</strong>.'
+            },
+            {
+              title: 'Database',
+              words: ['database', 'databases', 'db', 'sql', 'mssql', 'sql server', 'cluster', 'high availability', 'ha', 'active-passive', 'active-active', 'data layer'],
+              answer: 'The <strong>Treasury Database Cluster</strong> runs on <strong>MS SQL</strong>. It stores active transactional data, deal captures and user session states, ' +
+                'with high availability (active-passive or active-active).'
+            },
+            {
+              title: 'Web & application servers',
+              words: ['web server', 'web servers', 'app server', 'app servers', 'application server', 'application servers', 'iis', 'treasury server', 'application layer', 'cash management', 'liquidity', 'fx', 'trading'],
+              answer: '• <strong>Treasury Web Servers 1 &amp; 2</strong> (IIS): serve the web interface that internal users and branches use from their workstations.<br>' +
+                '• <strong>Treasury App Servers 1 &amp; 2</strong>: process the cash management, liquidity planning and FX trading logic.'
+            },
+            {
+              title: 'Architecture overview',
+              words: ['architecture', 'layers', 'tiers', 'multi-tier', 'multitier', 'diagram', 'overview', 'infrastructure', 'how is it set up', 'how does it work'],
+              answer: 'From the users down, each layer talks only to the next:<br>' +
+                '1. <strong>Internal users / branches</strong>: web interface on their workstations<br>' +
+                '2. <strong>Web Application Firewall</strong><br>' +
+                '3. <strong>Load balancers</strong> (presentation layer)<br>' +
+                '4. <strong>Treasury Web Servers 1 &amp; 2</strong> (IIS)<br>' +
+                '5. <strong>Internal firewall</strong><br>' +
+                '6. <strong>Treasury App Servers 1 &amp; 2</strong>, linked to the <strong>HSM</strong><br>' +
+                '7. <strong>ESB / API Gateway</strong> (ASP.NET API, integration &amp; security layer)<br>' +
+                '8. <strong>Treasury DB cluster</strong> (MS SQL), linked to the <strong>Core Banking system</strong> (T24)'
+            }
+          ]
+        }
+      ];
+
+      // Words that mean "this is an emergency": the bot steers them to a
+      // Critical ticket (or the agent on an existing one).
+      var URGENT_WORDS = ['urgent', 'outage', 'emergency', 'asap', 'is down', 'went down', 'everyone', 'nobody can', 'no one can', 'production'];
+
+      // Words for filtering the customer's own tickets ("any escalated
+      // tickets?", "show my high priority network tickets").
+      var STATUS_WORDS = { 'escalated': 'Escalated', 'waiting': 'Waiting', 'resolved': 'Resolved', 'closed': 'Closed', 'reopened': 'Reopened', 'in progress': 'In Progress', 'assigned': 'Assigned' };
+      var PRIORITY_WORDS = { 'critical': 'Critical', 'high': 'High', 'medium': 'Medium', 'low': 'Low' };
+      var CATEGORY_WORDS = { 'network': 'Network', 'application': 'Application', 'hardware': 'Hardware', 'access': 'Access & Identity' };
+      var LIST_WORDS = ['which', 'any', 'show', 'list', 'how many', 'do i have', 'tickets'];
 
       document.body.classList.add('has-helpbot');
 
@@ -2475,9 +2618,18 @@ document.addEventListener('DOMContentLoaded', function () {
           { label: 'My tickets', run: summarize },
           { label: 'Talk to an agent', run: contactAgent },
           { label: 'Report a new problem', run: newTicket },
+          { label: 'Symphony & RiskFlow', run: productsMenu },
           { label: 'How long will it take?', run: slaHelp },
           { label: 'What do the statuses mean?', run: function () { statusHelp(''); } }
         ];
+      }
+
+      function linkButtons(buttons) {
+        return (buttons || []).map(function (b) { return { label: b.label, href: b.href }; });
+      }
+
+      function productFor(q) {
+        return PRODUCTS.filter(function (p) { return has(q, p.words); })[0];
       }
 
       // ---- Answers ----
@@ -2605,6 +2757,79 @@ document.addEventListener('DOMContentLoaded', function () {
         reply('Use <strong>Logout</strong> at the top right to sign out here. <strong>Sign out all devices</strong> ends your session everywhere, including this browser. Use it if you signed in on a shared or lost device.');
       }
 
+      function productsMenu() {
+        reply('Which product is it about?', PRODUCTS.map(function (p) {
+          return { label: p.name, run: function () { productHelp(p, ''); } };
+        }));
+      }
+
+      function productHelp(p, q) {
+        var report = { label: 'Report a ' + p.name + ' problem', href: 'ticket.html?category=Application&service=' + encodeURIComponent(p.name) };
+        var related = all.filter(function (t) { return isOpen(t) && t.service && has(t.service.toLowerCase(), p.words); });
+        var relatedHtml = related.length
+          ? '<br><br>Your open ' + p.name + ' tickets:<br>' + related.slice(0, 3).map(ticketLine).join('<br>')
+          : '';
+        var relatedChoices = related.slice(0, 2).map(ticketChoice);
+
+        if (!p.summary && !p.topics.length) {
+          return reply("I don't have " + p.name + ' guides yet. An agent can answer your question, or you can report a problem.' + relatedHtml,
+            relatedChoices.concat([{ label: 'Talk to an agent', run: contactAgent }, report]));
+        }
+
+        var topic = p.topics.filter(function (tp) { return has(q, tp.words); })[0];
+        if (topic) {
+          return reply('<strong>' + p.name + ': ' + topic.title + '</strong><br>' + topic.answer + relatedHtml,
+            relatedChoices.concat([report]));
+        }
+
+        var topicChoices = p.topics.map(function (tp) {
+          return { label: tp.title, run: function () { reply('<strong>' + p.name + ': ' + tp.title + '</strong><br>' + tp.answer, [report]); } };
+        });
+        reply((p.summary || p.name) + (p.topics.length ? '<br><br>What do you need help with?' : '') + relatedHtml,
+          topicChoices.concat(relatedChoices, [report]));
+      }
+
+      function urgentHelp(q) {
+        var p = productFor(q);
+        var href = 'ticket.html?priority=Critical' + (p ? '&category=Application&service=' + encodeURIComponent(p.name) : '');
+        var open = all.filter(function (t) { return t.status !== 'Closed'; });
+        reply("If a service is down or it's stopping many people from working, raise a <strong>Critical</strong> ticket" + slaText('Critical') + '.' +
+          (open.length ? "<br><br>If it's about a ticket you already have, message the agent there instead so it isn't split in two." : ''),
+          [{ label: 'Create a Critical ticket', href: href }].concat(open.slice(0, 3).map(function (t) {
+            return { label: 'Message on ' + shortSubject(t), href: chatLink(t) };
+          })));
+      }
+
+      // Returns false when the message has no filter words, so answer() can
+      // move on to the next topic.
+      function ticketQuery(q) {
+        if (!has(q, LIST_WORDS)) return false;
+        var pick = function (map) { return Object.keys(map).filter(function (w) { return has(q, [w]); }).map(function (w) { return map[w]; }); };
+        var statuses = pick(STATUS_WORDS);
+        var priorities = pick(PRIORITY_WORDS);
+        var categories = pick(CATEGORY_WORDS);
+        var wantOpen = has(q, ['open']);
+        if (!statuses.length && !priorities.length && !categories.length && !wantOpen) return false;
+
+        var matches = all.filter(function (t) {
+          if (statuses.length && statuses.indexOf(t.status) === -1) return false;
+          if (priorities.length && priorities.indexOf(t.priority) === -1) return false;
+          if (categories.length && categories.indexOf(t.category) === -1) return false;
+          if (wantOpen && !statuses.length && !isOpen(t)) return false;
+          return true;
+        });
+        var label = escapeHtml(statuses.concat(priorities.map(function (p) { return p + ' priority'; }), categories, wantOpen && !statuses.length ? ['open'] : []).join(', '));
+        if (!matches.length) {
+          reply("You don't have any tickets matching <strong>" + label + '</strong>.', [{ label: 'All my tickets', run: summarize }]);
+          return true;
+        }
+        reply(matches.length + ' ticket' + (matches.length === 1 ? '' : 's') + ' matching <strong>' + label + '</strong>:<br>' +
+          matches.slice(0, 6).map(ticketLine).join('<br>') +
+          (matches.length > 6 ? '<br>…and ' + (matches.length - 6) + ' more in "Your tickets" below.' : ''),
+          matches.slice(0, 4).map(ticketChoice));
+        return true;
+      }
+
       function fallback() {
         reply("Sorry, I'm a simple assistant and didn't catch that. Try a ticket number (like TKT-2026-123456), or pick a topic:", menuChoices());
       }
@@ -2622,10 +2847,17 @@ document.addEventListener('DOMContentLoaded', function () {
         var q = text.toLowerCase();
         var idMatch = text.match(TICKET_ID_RE);
         if (idMatch) return describeTicket(idMatch[0].toUpperCase());
+        if (has(q, URGENT_WORDS)) return urgentHelp(q);
         if (has(q, ['sign out', 'log out', 'logout', 'signout', 'devices'])) return signOutHelp();
         if (has(q, ['reopen', 'not fixed', 'still broken', 'came back', 'happening again'])) return reopenHelp();
         if (has(q, ['mean', 'means', 'meaning', 'statuses'])) return statusHelp(q);
+        var product = productFor(q);
+        if (product) return productHelp(product, q);
+        if (has(q, ['product', 'products'])) return productsMenu();
         if (has(q, ['sla', 'how long', 'when will', 'eta', 'deadline', 'due', 'target', 'overdue', 'late'])) return slaHelp();
+        if (ticketQuery(q)) return;
+        var faq = FAQ_RULES.filter(function (r) { return has(q, r.words); })[0];
+        if (faq) return reply(typeof faq.answer === 'function' ? faq.answer() : faq.answer, linkButtons(faq.buttons));
         if (has(q, ['confirm', 'rate', 'rating', 'feedback', 'stars', 'close'])) return closeHelp();
         if (has(q, ['human', 'agent', 'person', 'someone', 'speak', 'talk', 'message', 'chat', 'contact', 'call'])) return contactAgent();
         if (has(q, ['status', 'my tickets', 'my ticket', 'progress', 'update', 'open tickets'])) return summarize();
