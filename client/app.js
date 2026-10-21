@@ -939,29 +939,26 @@ document.addEventListener('DOMContentLoaded', function () {
       escalation: row.escalated_to ? { to: row.escalated_to, reason: row.escalation_reason || '', by: '' } : null,
       csat: row.csat_rating != null ? { score: row.csat_rating, comment: row.csat_comment || '' } : null,
       // SLA clock — the server sets these; see docket-server/utils/sla.js.
-      responseDueAt: row.first_response_due_at || null,
       resolutionDueAt: row.resolution_due_at || null,
-      firstRespondedAt: row.first_responded_at || null,
       resolvedAt: row.resolved_at || null,
       slaPausedAt: row.sla_paused_at || null
     };
   }
 
   // What the agent/admin queue polls compare to decide whether a ticket
-  // changed enough to re-render. firstRespondedAt is in here so a reply sent
-  // from another tab clears the "response due" warning without a reload.
+  // changed enough to re-render.
   function ticketSignature(t) {
-    return t.status + '|' + (t.assignedAgent || '') + '|' + (t.firstRespondedAt || '');
+    return t.status + '|' + (t.assignedAgent || '');
   }
 
   // ---- SLA tracking ----
   // The server stores absolute due times and pauses/resumes the resolution
   // clock (docket-server/utils/sla.js); this only compares them to the
-  // current time. Each clock comes back as one of:
+  // current time. The clock comes back as one of:
   //   met | breached   — final outcome
   //   pending          — running, plenty of time left
   //   due-soon         — running, under a quarter of the window left
-  //   paused           — resolution clock while waiting on the customer
+  //   paused           — waiting on the customer
   // or null for a ticket with no SLA data.
   var SLA_DUE_SOON_FRACTION = 0.25;
 
@@ -975,16 +972,8 @@ document.addEventListener('DOMContentLoaded', function () {
   function slaInfo(t, now) {
     now = now || Date.now();
     var created = slaTime(t.createdAt);
-    var responseDue = slaTime(t.responseDueAt);
     var resolutionDue = slaTime(t.resolutionDueAt);
-    var info = { response: null, resolution: null, responseDue: responseDue, resolutionDue: null };
-
-    if (responseDue) {
-      var responded = slaTime(t.firstRespondedAt);
-      info.response = responded
-        ? (responded <= responseDue ? 'met' : 'breached')
-        : runningClock(responseDue, created, now);
-    }
+    var info = { resolution: null, resolutionDue: null };
 
     if (resolutionDue) {
       var resolved = slaTime(t.resolvedAt);
@@ -1017,16 +1006,12 @@ document.addEventListener('DOMContentLoaded', function () {
 
   // The single most urgent SLA warning for an open ticket, for its queue
   // row and the "SLA breached" stat: { level: 'breached'|'due-soon', text },
-  // or null when nothing needs attention. A response that was late but has
-  // since been sent isn't actionable any more, so it doesn't show here.
+  // or null when nothing needs attention.
   function slaAlert(t, now) {
     if (t.status === 'Resolved' || t.status === 'Closed') return null;
     now = now || Date.now();
     var s = slaInfo(t, now);
-    var responseOpen = !t.firstRespondedAt;
     if (s.resolution === 'breached') return { level: 'breached', text: 'SLA breached' };
-    if (responseOpen && s.response === 'breached') return { level: 'breached', text: 'Response overdue' };
-    if (responseOpen && s.response === 'due-soon') return { level: 'due-soon', text: 'Reply due ' + fmtSlaRelative(s.responseDue, now) };
     if (s.resolution === 'due-soon') return { level: 'due-soon', text: 'Due ' + fmtSlaRelative(s.resolutionDue, now) };
     return null;
   }
@@ -1037,12 +1022,12 @@ document.addEventListener('DOMContentLoaded', function () {
     return '<span class="history-chip sla-chip sla-' + alertInfo.level + '">' + escapeHtml(alertInfo.text) + '</span>';
   }
 
-  // Fills a ticket detail's SLA box: the targets, then one line per clock.
+  // Fills a ticket detail's SLA box: the target, then the clock's state.
   function renderSlaBox(el, t) {
     if (!el) return;
     var now = Date.now();
     var s = slaInfo(t, now);
-    if (!s.response && !s.resolution) { el.textContent = t.sla || '—'; return; }
+    if (!s.resolution) { el.textContent = t.sla || '—'; return; }
 
     function line(label, state, due) {
       var text;
@@ -1055,8 +1040,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     el.innerHTML =
       '<span class="sla-targets">' + escapeHtml(t.sla || '') + '</span>' +
-      (s.response ? line('Response', s.response, s.responseDue) : '') +
-      (s.resolution ? line('Resolution', s.resolution, s.resolutionDue) : '');
+      line('Resolution', s.resolution, s.resolutionDue);
   }
 
   // PATCH /api/tickets/:id/assign — pass a falsy agentId to send the ticket
@@ -2363,10 +2347,10 @@ document.addEventListener('DOMContentLoaded', function () {
         .then(function (rows) { if (Array.isArray(rows)) slaTargets = rows; })
         .catch(function (err) { console.error('SLA targets load error:', err); });
 
-      // " (reply 15 min, fix 4 hrs)" for a priority, or '' until slaTargets loads.
+      // " (fix 4 hrs)" for a priority, or '' until slaTargets loads.
       function slaText(priority) {
         var row = (slaTargets || []).filter(function (r) { return r.priority === priority; })[0];
-        return row ? ' (reply ' + escapeHtml(row.response) + ', fix ' + escapeHtml(row.resolution) + ')' : '';
+        return row ? ' (fix ' + escapeHtml(row.resolution) + ')' : '';
       }
 
       // ---- Rules: edit these to change what the bot knows ----
@@ -2878,10 +2862,10 @@ document.addEventListener('DOMContentLoaded', function () {
       }
 
       function slaHelp() {
-        var html = 'Every ticket has two targets, set by its priority: a first reply and a fix.<br>' +
+        var html = 'Every ticket has a fix target, set by its priority.<br>' +
           (slaTargets
             ? slaTargets.map(function (r) {
-                return '<strong>' + escapeHtml(r.priority) + '</strong>: reply ' + escapeHtml(r.response) + ', fix ' + escapeHtml(r.resolution);
+                return '<strong>' + escapeHtml(r.priority) + '</strong>: fix ' + escapeHtml(r.resolution);
               }).join('<br>')
             : "I couldn't load the target table just now, but each ticket's own target is shown when you pick it.") +
           '<br><br>The clocks run around the clock. The fix clock pauses while a ticket is Waiting on you, and while it\'s Resolved and waiting for you to confirm or reopen.';
@@ -5018,7 +5002,6 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function renderSlaReport(sla) {
       if (!sla) return;
-      document.getElementById('reportSlaResponse').textContent = fmtPct(sla.response.compliance_pct);
       document.getElementById('reportSlaResolution').textContent = fmtPct(sla.resolution.compliance_pct);
       document.getElementById('reportSlaBreached').textContent = sla.resolution.breached;
       document.getElementById('reportSlaOpenBreached').textContent = sla.open_breached;
@@ -5035,7 +5018,6 @@ document.addEventListener('DOMContentLoaded', function () {
         row.innerHTML =
           '<div class="history-main"><p class="history-subject">' + escapeHtml(r.priority) + '</p></div>' +
           '<div class="history-meta">' +
-            '<span class="history-chip">Response ' + escapeHtml(fmtPct(r.response_compliance_pct)) + '</span>' +
             '<span class="history-chip">Resolution ' + escapeHtml(fmtPct(r.resolution_compliance_pct)) + '</span>' +
             (r.resolution_breached ? '<span class="history-chip sla-chip sla-breached">' + escapeHtml(r.resolution_breached) + ' breached</span>' : '') +
           '</div>';

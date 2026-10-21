@@ -125,16 +125,7 @@ router.post('/', requireAuth(), requireTicketAccess(TICKET_ACCESS), asyncHandler
 
       await insertAttachmentRows(client, { commentId: newCommentId }, normalizedFiles);
 
-      // A public agent/admin reply is what meets the first-response SLA
-      // (see utils/sla.js); internal notes never reach the customer.
-      const isFirstResponse = authorType !== 'customer' && vis === 'public';
-      await client.query(
-        `UPDATE tickets
-         SET updated_at = now(),
-             first_responded_at = CASE WHEN $2::boolean THEN COALESCE(first_responded_at, now()) ELSE first_responded_at END
-         WHERE id = $1`,
-        [req.params.ticketId, isFirstResponse]
-      );
+      await client.query('UPDATE tickets SET updated_at = now() WHERE id = $1', [req.params.ticketId]);
       // Replying means you've seen the conversation up to here.
       await markRead(req.params.ticketId, authorType, req.actor.id, newCommentId, client);
       return newCommentId;

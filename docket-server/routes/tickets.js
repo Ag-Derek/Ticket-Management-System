@@ -123,7 +123,7 @@ router.post('/', requireAuth(['user', 'admin']), asyncHandler(async (req, res) =
   const id = await nextId(db, 'tickets', 'TKT');
   const team = TEAM_BY_CATEGORY[category];
   const sla = slaSummary(priority);
-  const { responseMinutes, resolutionMinutes } = slaFor(priority);
+  const { resolutionMinutes } = slaFor(priority);
 
   // Files are uploaded before the ticket row exists — a size-cap failure
   // here means the ticket is never created at all, rather than ending up
@@ -141,11 +141,11 @@ router.post('/', requireAuth(['user', 'admin']), asyncHandler(async (req, res) =
         `INSERT INTO tickets
            (id, user_id, subject, description, category, priority, status,
             affected_service, assigned_team, sla_summary,
-            first_response_due_at, resolution_due_at)
+            resolution_due_at)
          VALUES ($1, $2, $3, $4, $5, $6, 'Created', $7, $8, $9,
-                 now() + make_interval(mins => $10), now() + make_interval(mins => $11))`,
+                 now() + make_interval(mins => $10))`,
         [id, user_id, subject.trim(), description.trim(), category, priority, affected_service || null, team, sla,
-          responseMinutes, resolutionMinutes]
+          resolutionMinutes]
       );
 
       await insertAttachmentRows(client, { ticketId: id }, normalizedAttachments);
@@ -239,7 +239,7 @@ router.get('/', requireAuth(), asyncHandler(async (req, res) => {
 router.get('/sla-targets', requireAuth(), (req, res) => {
   res.json(VALID_PRIORITIES.slice().reverse().map((priority) => {
     const sla = slaFor(priority);
-    return { priority, response: sla.response, resolution: sla.resolution };
+    return { priority, resolution: sla.resolution };
   }));
 });
 
@@ -384,7 +384,6 @@ router.patch(
     try {
       // SLA clock (see utils/sla.js). Every right-hand side reads the row as
       // it was before this UPDATE:
-      // - resolving counts as a first response if there hasn't been one;
       // - entering Waiting/Resolved pauses the resolution clock;
       // - reopening starts a fresh resolution SLA: the full window for the
       //   ticket's priority, counted from the reopen;
@@ -402,8 +401,6 @@ router.patch(
                                 WHEN $5 = 'Reopened' THEN NULL
                                 ELSE resolved_at END,
              closed_at = CASE WHEN $5 = 'Closed' THEN now() ELSE closed_at END,
-             first_responded_at = CASE WHEN $5 = 'Resolved' THEN COALESCE(first_responded_at, now())
-                                       ELSE first_responded_at END,
              resolution_due_at = CASE WHEN $5 = 'Reopened' THEN now() + make_interval(mins => $9)
                                       WHEN sla_paused_at IS NOT NULL AND NOT ($5 = ANY($8::text[])) AND $5 <> 'Closed'
                                       THEN resolution_due_at + (now() - sla_paused_at)

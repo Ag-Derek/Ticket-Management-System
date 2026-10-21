@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS tickets (
                       -- | Resolved | Reopened | Closed
   affected_service    TEXT,
   assigned_team       TEXT,                  -- derived from category at creation
-  sla_summary         TEXT,                  -- e.g. "15 min response / 4 hrs resolution"
+  sla_summary         TEXT,                  -- e.g. "4 hrs resolution"
   assigned_agent_id   TEXT REFERENCES agents(id),
   -- Set when an agent escalates a ticket and recommends who should pick it
   -- up next. Informational only — an agent still cannot assign/reassign a
@@ -135,15 +135,11 @@ ALTER TABLE tickets ADD COLUMN IF NOT EXISTS suggested_agent_id TEXT REFERENCES 
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
 
--- SLA clock (rules in utils/sla.js). Due times are absolute, set from the
--- priority's targets at creation. first_responded_at is the first public
--- agent/admin reply (or the first resolve). sla_paused_at is set while the
--- resolution clock is paused (Waiting / Resolved); resuming pushes
--- resolution_due_at back by the paused time. Existing tickets are
--- backfilled at the bottom of this file.
-ALTER TABLE tickets ADD COLUMN IF NOT EXISTS first_response_due_at TIMESTAMPTZ;
+-- SLA clock (rules in utils/sla.js). The due time is absolute, set from the
+-- priority's target at creation. sla_paused_at is set while the clock is
+-- paused (Waiting / Resolved); resuming pushes resolution_due_at back by the
+-- paused time. Existing tickets are backfilled at the bottom of this file.
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS resolution_due_at TIMESTAMPTZ;
-ALTER TABLE tickets ADD COLUMN IF NOT EXISTS first_responded_at TIMESTAMPTZ;
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_paused_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS ticket_comments (
@@ -296,22 +292,14 @@ SET closed_at = COALESCE(
 WHERE t.closed_at IS NULL AND t.status = 'Closed';
 
 -- Backfill the SLA clock for tickets created before it existed. Minute
--- values mirror SLA_BY_PRIORITY in utils/sla.js. First response is the
--- earlier of the first public agent/admin reply and the resolve time
--- (LEAST skips NULLs). Tickets sitting
+-- values mirror SLA_BY_PRIORITY in utils/sla.js. Tickets sitting
 -- in Waiting/Resolved right now start paused from their last update (or
 -- resolve time); earlier pauses aren't recoverable, so those tickets get no
 -- credit for them. Only touches rows with no due time yet, so after the
 -- first boot this matches nothing.
 UPDATE tickets t
-SET first_response_due_at = t.created_at + make_interval(mins => CASE t.priority
-      WHEN 'Critical' THEN 15 WHEN 'High' THEN 30 WHEN 'Low' THEN 1440 ELSE 240 END),
-    resolution_due_at = t.created_at + make_interval(mins => CASE t.priority
+SET resolution_due_at = t.created_at + make_interval(mins => CASE t.priority
       WHEN 'Critical' THEN 240 WHEN 'High' THEN 480 WHEN 'Low' THEN 7200 ELSE 2880 END),
-    first_responded_at = LEAST(
-      (SELECT MIN(c.created_at) FROM ticket_comments c
-       WHERE c.ticket_id = t.id AND c.visibility = 'public' AND c.author_type IN ('agent', 'admin')),
-      t.resolved_at),
     sla_paused_at = CASE
       WHEN t.status = 'Waiting' THEN t.updated_at
       WHEN t.status = 'Resolved' THEN COALESCE(t.resolved_at, t.updated_at)
