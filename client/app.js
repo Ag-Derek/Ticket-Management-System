@@ -2414,7 +2414,158 @@ document.addEventListener('DOMContentLoaded', function () {
       // bot says it doesn't have that product's guides yet and offers an
       // agent instead. Each topic: { title, words, answer }.
       var PRODUCTS = [
-        { name: 'Symphony', words: ['symphony'], summary: null, topics: [] },
+        // From "Federation WhatsApp Starter Guide - Jul 2026" (12 pages) and
+        // "Proposal: Symphony Chat Platform Integration with Local Ghanaian
+        // SMS Gateway" (4 pages). Topics are checked in order, so the
+        // specific ones come before the broad ones; the SMS overview is last
+        // so a bare "sms" lands there.
+        {
+          name: 'Symphony',
+          words: ['symphony', 'whatsapp', 'federation', 'sms', 'hubtel', 'mnotify', 'arkesel'],
+          summary: '<strong>Symphony Messaging</strong> is a secure, compliant messaging platform for financial services. ' +
+            'Its <strong>WhatsApp Federation</strong> channel lets you chat with external contacts on WhatsApp from Symphony, ' +
+            'and a proposed <strong>Ghana SMS integration</strong> sends outbound 2FA codes and account updates to +233 numbers.',
+          topics: [
+            {
+              title: 'Blocking contacts',
+              words: ['block', 'blocking', 'unblock', 'spam', 'abuse', 'fraud', 'fraudulent'],
+              answer: 'You can block a <strong>WhatsApp Direct</strong> contact to stop unwanted, disruptive or fraudulent messages:<br>' +
+                "• <strong>Desktop:</strong> open the contact's profile and select <strong>Block</strong>.<br>" +
+                "• <strong>Mobile:</strong> open the contact's profile, tap the <strong>More</strong> menu, then <strong>Block</strong>.<br>" +
+                'Pick a reason (Spam, Abuse, Compliance or Other), add notes if you like, and confirm. ' +
+                "Use <strong>Unblock</strong> on their profile to undo it. Colleagues aren't blocked, and shared group chats stay active."
+            },
+            {
+              title: 'Contact has no WhatsApp',
+              words: ['unavailable', 'account not found', 'no whatsapp', 'not on whatsapp', "doesn't have whatsapp", 'does not have whatsapp', 'grayed out', 'greyed out', 'remove contact', 'remove a contact', 'wrong number'],
+              answer: "If you onboard someone who doesn't have WhatsApp, their card shows <strong>Unavailable</strong>, they're grayed out and can't be added to rooms, " +
+                "and a message in the room says their WhatsApp account can't be found.<br>" +
+                'To remove them, select <strong>Learn more</strong> on their card or in the warning, then <strong>Remove</strong>. ' +
+                'Ask them to create a WhatsApp account or give you the correct number, then onboard them again.<br>' +
+                'Admins can also remove Federation contacts with the <strong>Federation Channels</strong> app from the Symphony Marketplace.'
+            },
+            {
+              title: 'WhatsApp voice calls',
+              words: ['call', 'calls', 'calling', 'voice', 'recording', 'recorded', 'callback', 'call back'],
+              answer: "Users entitled to <strong>WhatsApp Direct</strong> with the <strong>Enable calls</strong> permission can call contacts. " +
+                'WhatsApp Voice is an add-on on request, at extra cost.<br>' +
+                '1. In a chat with a WhatsApp Direct contact, select the <strong>WhatsApp Call</strong> button.<br>' +
+                '2. The contact gets a call permission request and must allow it. In regions where business-initiated calls are not allowed, ' +
+                'you request a callback instead and the contact taps <strong>Call on WhatsApp</strong>.<br>' +
+                '3. The call starts as soon as the contact gives permission.<br>' +
+                'If the <strong>Enable call recording</strong> permission is on, both sides are told the call is recorded.'
+            },
+            {
+              title: 'QR code & profile link',
+              words: ['qr', 'qr code', 'profile link', 'whatsapp link', 'scan', 'share my profile', 'unsolicited chat'],
+              answer: 'WhatsApp contacts can reach you by scanning your profile QR code:<br>' +
+                '• <strong>Mobile:</strong> three-dot menu → <strong>Profile</strong> → QR code icon (top right) → choose the WhatsApp QR code.<br>' +
+                '• <strong>Desktop:</strong> your profile picture (bottom left) → <strong>View profile</strong> → <strong>WhatsApp</strong> tab. You can also copy the link and send it.<br>' +
+                'With <strong>WhatsApp Direct</strong>, scanning opens a chat with your number. With <strong>WhatsApp Connect</strong> (and the <em>Allow unsolicited chat requests</em> add-on), ' +
+                'the contact sends a prefilled message to a bot and gets a link to a chat with you.'
+            },
+            {
+              title: "24-hour window (messages not showing)",
+              words: ['24-hour', '24 hour', '24 hours', '24h', 'not receiving', 'not getting', 'not seeing', "can't see", 'view message', 'template', 'templates', 'inactive', 'queued', 'delayed'],
+              answer: "WhatsApp has a <strong>24-hour rule</strong>: if a contact hasn't been active for over 24 hours, new messages don't show automatically. " +
+                'They see a reminder and the queued messages appear once they send a message or tap <strong>View Message</strong>.<br>' +
+                'Ask your TAM or SA about <strong>WhatsApp interactive message templates</strong>, which deliver immediately without the 24-hour limit.'
+            },
+            {
+              title: 'Chats & group chats',
+              words: ['group', 'groups', 'group chat', 'native group', 'one-to-one', 'start a chat', 'new chat', 'more than 8', 'request to join'],
+              answer: '<strong>One-to-one:</strong> select <strong>+</strong> (New Chat), search for the contact by name (or phone number on mobile), and start the chat.<br>' +
+                '<strong>Group chat:</strong> on desktop select <strong>+</strong> → <strong>Create WhatsApp Group Chat</strong>; on mobile, three-dot menu → <strong>Create group</strong> → WhatsApp. ' +
+                'Add contacts (at least one WhatsApp contact), name the group and create it.<br>' +
+                '• <strong>Create as native WhatsApp group</strong> (add-on) is limited to 8 WhatsApp contacts. Untick it for a standard chat with more.<br>' +
+                '• In a native group, each WhatsApp contact gets an invite link, taps <strong>Request to join</strong>, and is accepted automatically.'
+            },
+            {
+              title: 'Managing chat rooms',
+              words: ['add members', 'add member', 'add someone', 'remove member', 'remove from', 'owner', 'owners', 'rename', 'room name', 'promote', 'demote', 'chat details', 'members'],
+              answer: '• <strong>Add members:</strong> desktop: <strong>Add members</strong> at the top of the chat. Mobile: tap the chat header → <strong>Members</strong> → <strong>+</strong>.<br>' +
+                '• <strong>Remove, promote or demote:</strong> desktop: three-dot menu → <strong>Chat details</strong> → <strong>Members</strong> → the member\'s menu. ' +
+                'Mobile: press the member\'s name on the Members screen. Options: Make an owner, Remove as owner, Remove from conversation.<br>' +
+                '• <strong>Rename:</strong> desktop: pencil icon by the room name. Mobile: chat header → <strong>Edit</strong>.'
+            },
+            {
+              title: 'Editing contacts',
+              words: ['edit', 'edit contact', 'update contact', 'change name', 'change email', 'change details', 'incomplete', 'incomplete contact', 'unknown number'],
+              answer: "Users and admins can update a WhatsApp contact's name, company and email.<br>" +
+                "• <strong>Desktop:</strong> open the contact's profile (from search, or the chat's Members panel → <strong>View profile</strong>), select <strong>Edit Contact</strong>, then <strong>Save</strong>.<br>" +
+                "• <strong>Mobile:</strong> open the profile, tap <strong>More</strong> → <strong>Edit</strong>, then <strong>Save</strong>.<br>" +
+                "When someone not in your contacts messages your WhatsApp Direct number, an <strong>incomplete contact</strong> and chat are created automatically. " +
+                "Edit it the same way; the chat name updates too.<br>" +
+                "Contact details are shared company-wide, so changes affect every Federation user."
+            },
+            {
+              title: 'What the contact sees',
+              words: ['onboarding message', 'invite', 'invitation', 'contact see', 'client see', 'tap continue', 'receive', 'join'],
+              answer: 'Once you add a WhatsApp contact, they get an onboarding message from Symphony Messaging on WhatsApp:<br>' +
+                '1. They tap <strong>Continue</strong> in the chat.<br>' +
+                '2. Depending on the setup, they reply or tap to connect with you.<br>' +
+                '3. They can then chat securely with you on WhatsApp.<br>' +
+                'Message templates and flows can be customised.'
+            },
+            {
+              title: 'Adding WhatsApp contacts',
+              words: ['add', 'adding', 'add contact', 'add a contact', 'new contact', 'create contact', 'create a contact', 'onboard', 'bulk', 'connect bot', 'already onboarded', "doesn't match", 'does not match', 'mismatch', 'contacts app', 'vcard', 'default app', 'address book'],
+              answer: '• <strong>Desktop:</strong> select <strong>+</strong> (Create) or Connections → <strong>Add contact</strong>, choose <strong>WhatsApp</strong>, fill in first name, last name, company, email and phone, tick <em>Create a chat</em> if you want one, then <strong>Add</strong> and <strong>Confirm</strong>.<br>' +
+                '• <strong>Mobile:</strong> tap <strong>+</strong> → <strong>Add contact</strong> → WhatsApp, fill in the details (email optional) or pick from your address book, then <strong>Add</strong> and <strong>Confirm</strong>. ' +
+                "You can also share a contact from your phone's Contacts app to Symphony Messaging.<br>" +
+                '• <strong>In bulk:</strong> use the <strong>Connect Bot</strong> (ask your TAM to enable it; see the Connect Bot User Guide on Symphony Docs).<br>' +
+                "If a colleague already onboarded the contact, use the <strong>same email and phone number</strong>. The app warns you if they don't match."
+            },
+            {
+              title: 'WhatsApp Connect vs Direct',
+              words: ['whatsapp connect', 'whatsapp direct', 'shared number', 'dedicated number', 'difference', 'entitlement', 'entitled', 'federation channels'],
+              answer: 'One WhatsApp Federation channel covers both:<br>' +
+                '• <strong>WhatsApp Connect</strong>: shared WhatsApp numbers. Supports native WhatsApp groups (add-on) and unsolicited chat requests via a bot (add-on).<br>' +
+                '• <strong>WhatsApp Direct</strong>: a dedicated WhatsApp number per user. Supports voice calls (add-on), blocking contacts, and incomplete contacts from unknown numbers. ' +
+                "Its chats don't appear in the ROOMS tab of the WhatsApp extension app.<br>" +
+                'The <strong>Federation Channels</strong> app in the Symphony Marketplace handles admin actions such as removing a contact.'
+            },
+            {
+              title: 'Ghana SMS: number format',
+              words: ['number format', 'phone format', 'e.164', 'e164', '233', 'normalize', 'normalise', 'sanitize', 'sanitise', 'leading 0', 'leading zero', 'country code'],
+              answer: 'The SMS Integration Bridge normalises Ghanaian numbers before calling the provider:<br>' +
+                '• Strip spaces, dashes and the leading 0.<br>' +
+                '• Add the country code <strong>233</strong> (or +233, depending on the provider).<br>' +
+                '• Example: <strong>0244123456</strong> or <strong>+233 24 412 3456</strong> → <strong>233244123456</strong>'
+            },
+            {
+              title: 'Ghana SMS: provider & Sender ID',
+              words: ['hubtel', 'mnotify', 'arkesel', 'provider', 'providers', 'aggregator', 'contract', 'contracting', 'billing', 'credits', 'nca', 'dpc', 'regulatory', 'regulation', 'compliance', 'licence', 'license', 'sender id', 'sender name', 'mtn', 'telecel', 'airteltigo'],
+              answer: '• <strong>Contract:</strong> the customer contracts directly with a local Ghanaian SMS provider (e.g. <strong>Hubtel</strong>, <strong>mNotify</strong> or <strong>Arkesel</strong>) that connects to MTN, Telecel and AT. ' +
+                "Symphony is only the technical integration partner and doesn't resell SMS credits.<br>" +
+                "• <strong>Compliance &amp; billing:</strong> the customer handles NCA and Data Protection Commission obligations, balances and volume tiers with the provider.<br>" +
+                "• <strong>Sender ID:</strong> an alphanumeric ID of up to <strong>11 characters</strong> (e.g. SYM-2FA), registered through the provider under the customer's legal entity. " +
+                "It usually needs a Business Registration Certificate, and stops messages being blocked as spam."
+            },
+            {
+              title: 'Ghana SMS: security & rollout',
+              words: ['masking', 'mask', 'rate limit', 'rate limiting', 'logs', 'logging', 'pii', 'firewall', 'timeline', 'how long', 'weeks', 'go live', 'rollout', 'implementation', 'testing'],
+              answer: '<strong>Security:</strong><br>' +
+                '• Outbound only, so no firewall changes for inbound internet traffic.<br>' +
+                '• Logs mask codes and personal data (e.g. "Sent 2FA to 233244XXXXXX").<br>' +
+                '• Rate limiting in the middleware prevents SMS spam and unexpected bills.<br>' +
+                '<strong>Rollout (4 weeks):</strong><br>' +
+                '1. Week 1: choose the provider, open the account, request the Sender ID.<br>' +
+                '2. Week 2: build the Symphony bot and middleware.<br>' +
+                '3. Week 3: end-to-end testing on MTN, Telecel and AT test numbers.<br>' +
+                '4. Week 4: move to production and hand over to operations.'
+            },
+            {
+              title: 'Ghana SMS: how it works',
+              words: ['sms', 'text message', 'text messages', '2fa', 'otp', 'account update', 'account updates', 'middleware', 'bridge', 'outbound', 'inbound', 'reply', 'two-way', 'payload', 'flow'],
+              answer: 'The proposed integration is <strong>outbound only</strong> (no incoming SMS), for 2FA codes and account updates to Ghanaian (+233) numbers:<br>' +
+                '1. A workflow or security event in Symphony triggers a 2FA request or account update.<br>' +
+                '2. A custom <strong>Symphony bot</strong> (BDK/REST API) catches the event.<br>' +
+                '3. The bot POSTs the phone number and message to the internal <strong>SMS Integration Bridge</strong>.<br>' +
+                "4. The bridge normalises the number and sends it over HTTPS (API key / Bearer token) to the customer's Ghanaian SMS provider, which delivers it through MTN, Telecel or AT."
+            }
+          ]
+        },
         // From "Riskflow Calibre Treasury Management Application Hardware
         // Architecture" (2 pages). Topics are checked in order, so the
         // specific ones come before the general overview words.
@@ -2618,7 +2769,7 @@ document.addEventListener('DOMContentLoaded', function () {
           { label: 'My tickets', run: summarize },
           { label: 'Talk to an agent', run: contactAgent },
           { label: 'Report a new problem', run: newTicket },
-          { label: 'Symphony & RiskFlow', run: productsMenu },
+          { label: 'Our products', run: productsMenu },
           { label: 'How long will it take?', run: slaHelp },
           { label: 'What do the statuses mean?', run: function () { statusHelp(''); } }
         ];
@@ -2758,7 +2909,7 @@ document.addEventListener('DOMContentLoaded', function () {
       }
 
       function productsMenu() {
-        reply('Which product is it about?', PRODUCTS.map(function (p) {
+        reply('These are the products we support. Pick one to see what I can help with:', PRODUCTS.map(function (p) {
           return { label: p.name, run: function () { productHelp(p, ''); } };
         }));
       }
