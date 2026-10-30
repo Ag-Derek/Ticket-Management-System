@@ -4,6 +4,7 @@ const { nextId } = require('../utils/ids');
 const { authenticateToken, bearerToken, requireAuth } = require('../middleware/authenticate');
 const { recordAuditLog, resolveActorName } = require('../utils/audit');
 const { createChallenge, MfaError, sendMfaError } = require('../utils/mfa');
+const { asyncHandler } = require('../utils/async-handler');
 
 const router = express.Router();
 
@@ -48,7 +49,7 @@ router.get('/:id', requireAuth(['admin']), async (req, res) => {
 //  2. Admin "add an agent" (admin-dashboard.html) — created_by: 'admin',
 //     requires an admin token, and a duplicate email is a hard error. No
 //     token is returned: the new agent signs in themselves, via MFA.
-router.post('/', async (req, res) => {
+router.post('/', asyncHandler(async (req, res) => {
   const { full_name, email, created_by } = req.body || {};
   const createdBy = VALID_CREATED_BY.includes(created_by) ? created_by : 'self-signup';
 
@@ -65,10 +66,10 @@ router.post('/', async (req, res) => {
     }
   }
 
-  if (createdBy !== 'self-signup' && (!full_name || !full_name.trim())) {
+  if (createdBy !== 'self-signup' && (typeof full_name !== 'string' || !full_name.trim())) {
     return res.status(400).json({ error: 'full_name is required' });
   }
-  if (!email || !EMAIL_RE.test(email.trim())) {
+  if (typeof email !== 'string' || !EMAIL_RE.test(email.trim())) {
     return res.status(400).json({ error: 'a valid email is required' });
   }
 
@@ -127,7 +128,7 @@ router.post('/', async (req, res) => {
     console.error('POST /api/agents error:', err);
     res.status(500).json({ error: 'failed to save agent' });
   }
-});
+}));
 
 // GET /api/agents/:id/tickets — tickets currently assigned to this agent.
 // Admin-only (an agent's own queue comes from GET /api/tickets instead).
