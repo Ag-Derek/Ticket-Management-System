@@ -16,3 +16,8 @@ node_modules/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Database backups and their keys
+*.backup
+*.backup.partial
+*.pem

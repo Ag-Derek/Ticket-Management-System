@@ -8,6 +8,7 @@
     "seed": "node db/seed.js",
     "start": "node server.js",
     "dev": "node --watch server.js",
+    "backup": "node scripts/backup.js",
     "migrate-to-postgres": "node db/migrate-to-postgres.js"
   },
   "dependencies": {

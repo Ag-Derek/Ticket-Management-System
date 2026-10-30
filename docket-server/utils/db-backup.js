@@ -1,16 +1,4 @@
-const { createClient } = require('@supabase/supabase-js');
 const db = require('../db/connection');
-
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const BUCKET = process.env.SUPABASE_STORAGE_BUCKET || 'attachments';
-const BACKUP_PREFIX = '_db-backups';
-
-if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-  throw new Error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set');
-}
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 // Order matters on restore: children (referencing a FK) after their
 // parents. ticket_attachments references both tickets and ticket_comments;
@@ -26,6 +14,12 @@ const TABLES = [
   'audit_logs', 'account_help_requests', 'app_settings'
 ];
 
+// Restorable, but no longer written to new backups. It only holds the seeded
+// admin's password hash, and db/seed.js recreates that from ADMIN_PASSWORD,
+// so a backup has no need to carry a credential. It stays in TABLES so older
+// backups that do contain it can still be restored.
+const NOT_BACKED_UP = new Set(['auth_credentials']);
+
 // Tables whose id is GENERATED ALWAYS AS IDENTITY. Restoring them needs
 // OVERRIDING SYSTEM VALUE to keep the original ids (comments, attachments
 // and read markers point at them), and their sequences moved past the
@@ -34,61 +28,29 @@ const IDENTITY_TABLES = new Set([
   'auth_credentials', 'ticket_comments', 'ticket_attachments', 'audit_logs', 'account_help_requests'
 ]);
 
-// Postgres has no single-file binary snapshot the way better-sqlite3's
-// db.backup() did — the database itself is managed by Supabase, not a
-// file this app owns. Instead, this dumps every table's rows as JSON and
-// uploads that to Supabase Storage: an application-level backup that's
-// restorable with a plain INSERT loop (see restoreBackup below), and
-// still lives off the Render disk entirely.
-async function backupDatabase() {
-  const dump = { createdAt: new Date().toISOString(), tables: {} };
-  for (const table of TABLES) {
-    const result = await db.query(`SELECT * FROM ${table}`);
-    dump.tables[table] = result.rows;
-  }
-
-  const buffer = Buffer.from(JSON.stringify(dump), 'utf8');
-  const key = `${BACKUP_PREFIX}/docket-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
-  const { error } = await supabase.storage.from(BUCKET).upload(key, buffer, {
-    upsert: false,
-    contentType: 'application/json'
+// Every table is read inside one REPEATABLE READ transaction so they all
+// describe the same moment. Read separately, a comment on a ticket created
+// mid-backup could be saved without its ticket, and that one row would fail
+// the foreign key and abort the whole restore.
+async function snapshotDatabase() {
+  return db.withTransaction(async (client) => {
+    await client.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    const dump = { createdAt: new Date().toISOString(), tables: {} };
+    for (const table of TABLES.filter((t) => !NOT_BACKED_UP.has(t))) {
+      const result = await client.query(`SELECT * FROM ${table}`);
+      dump.tables[table] = result.rows;
+    }
+    return dump;
   });
-  if (error) {
-    throw new Error(`failed to upload backup: ${error.message}`);
-  }
-
-  const rowCounts = Object.fromEntries(TABLES.map((t) => [t, dump.tables[t].length]));
-  return { key, sizeBytes: buffer.length, rowCounts };
 }
 
-async function listBackups() {
-  const { data, error } = await supabase.storage
-    .from(BUCKET)
-    .list(BACKUP_PREFIX, { sortBy: { column: 'created_at', order: 'desc' } });
-  if (error) {
-    throw new Error(`failed to list backups: ${error.message}`);
-  }
-  return (data || [])
-    .filter((f) => f.id) // Supabase list() can include a placeholder row for an empty prefix
-    .map((f) => ({ name: f.name, sizeBytes: f.metadata && f.metadata.size, createdAt: f.created_at }));
+function rowCounts(dump) {
+  return Object.fromEntries(Object.entries(dump.tables).map(([table, rows]) => [table, rows.length]));
 }
 
-// Fetches one backup's raw JSON bytes back out of Storage, for download
-// or restore.
-async function fetchBackup(name) {
-  const { data, error } = await supabase.storage.from(BUCKET).download(`${BACKUP_PREFIX}/${name}`);
-  if (error || !data) return null;
-  return Buffer.from(await data.arrayBuffer());
-}
-
-// Restores a JSON dump produced by backupDatabase(). Deliberately not
-// wired to any route — a restore is destructive (TRUNCATE) and rare
-// enough to run by hand (node -e) rather than exposing it over HTTP.
-async function restoreBackup(name) {
-  const buffer = await fetchBackup(name);
-  if (!buffer) throw new Error(`backup "${name}" not found`);
-  const dump = JSON.parse(buffer.toString('utf8'));
-
+// Restores a dump produced by snapshotDatabase(). Destructive (TRUNCATE) and
+// rare enough to only ever be run by hand — see scripts/backup.js.
+async function restoreDump(dump) {
   // Only the tables this backup actually contains. A backup taken before
   // audit_logs etc. were included must not wipe those tables on restore.
   // (TRUNCATE ... CASCADE on tickets still empties ticket_reads, since its
@@ -124,4 +86,4 @@ async function restoreBackup(name) {
   });
 }
 
-module.exports = { backupDatabase, listBackups, fetchBackup, restoreBackup };
+module.exports = { snapshotDatabase, restoreDump, rowCounts };

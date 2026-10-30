@@ -23,7 +23,9 @@ const pool = new Pool({
   // needing its CA bundle installed locally/on Render. The connection
   // itself is still encrypted — this only skips verifying the certificate
   // chain, standard practice for connecting to Supabase from app code.
-  ssl: { rejectUnauthorized: false },
+  // DATABASE_SSL=false is only for a local Postgres with no TLS, such as a
+  // database used to test a restore.
+  ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
   // Fail rather than wait forever when the database doesn't answer, so
   // /api/health and startup can report the problem.
   connectionTimeoutMillis: 10 * 1000

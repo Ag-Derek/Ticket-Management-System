@@ -61,6 +61,27 @@ async function fetchAttachmentFile(storedPath) {
   return Buffer.from(await data.arrayBuffer());
 }
 
+// For backups, where "the file is gone" and "Storage didn't answer" must not
+// look the same: null only when the object really doesn't exist, and a throw
+// for anything else.
+async function fetchAttachmentForBackup(storedPath) {
+  const { data, error } = await supabase.storage.from(BUCKET).download(storedPath);
+  if (error) {
+    if (error.status === 404 || String(error.statusCode) === '404') return null;
+    throw new Error(`failed to download "${storedPath}" from storage: ${error.message}`);
+  }
+  return Buffer.from(await data.arrayBuffer());
+}
+
+// Puts a file back at its original path during a restore, so the restored
+// ticket_attachments rows still point at it. Upsert so a restore can be rerun.
+async function restoreAttachmentFile(storedPath, buffer) {
+  const { error } = await supabase.storage.from(BUCKET).upload(storedPath, buffer, { upsert: true });
+  if (error) {
+    throw new Error(`failed to restore "${storedPath}" to storage: ${error.message}`);
+  }
+}
+
 // Best-effort removal of stored files when their ticket is deleted. The DB
 // rows are already gone by the time this runs, so a failure here only
 // leaves an orphaned object in the bucket — logged, never thrown.
@@ -134,6 +155,8 @@ async function insertAttachmentRows(client, parent, attachments) {
 module.exports = {
   saveAttachmentFile,
   fetchAttachmentFile,
+  fetchAttachmentForBackup,
+  restoreAttachmentFile,
   removeAttachmentFiles,
   uploadAllOrNone,
   uploadIncomingAttachments,
