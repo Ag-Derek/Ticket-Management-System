@@ -11,6 +11,21 @@ const router = express.Router();
 // currently assigned agent, or any admin.
 const TICKET_ACCESS = { allowCustomer: true, allowAssignedAgent: true, allowAdmin: true };
 
+// mime_type is whatever the uploader claimed, and setHeader throws on
+// characters a header can't carry.
+const SAFE_HEADER_VALUE_RE = /^[\x20-\x7e]+$/;
+
+// Headers can only safely carry ASCII, so the real name goes in filename*
+// (RFC 6266), with an ASCII filename as the fallback for older clients.
+// Round-tripping through a Buffer replaces lone surrogates, which
+// encodeURIComponent would otherwise throw on.
+function contentDisposition(filename) {
+  const name = Buffer.from(String(filename)).toString();
+  const fallback = name.replace(/[^\x20-\x7e]|["\\]/g, '_');
+  const encoded = encodeURIComponent(name).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+}
+
 // Resolves an attachment row to the ticket it belongs to and the
 // visibility that gates it. Per the schema's CHECK constraint, an
 // attachment has exactly one parent:
@@ -81,9 +96,9 @@ router.get('/:id', requireAuth(), asyncHandler(async (req, res) => {
     return res.status(404).json({ error: 'attachment file is missing in storage' });
   }
 
-  const safeName = String(resolved.attachment.filename).replace(/"/g, "'");
-  res.setHeader('Content-Type', resolved.attachment.mime_type || 'application/octet-stream');
-  res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+  const mimeType = resolved.attachment.mime_type;
+  res.setHeader('Content-Type', SAFE_HEADER_VALUE_RE.test(mimeType || '') ? mimeType : 'application/octet-stream');
+  res.setHeader('Content-Disposition', contentDisposition(resolved.attachment.filename));
   res.send(buffer);
 }));
 
