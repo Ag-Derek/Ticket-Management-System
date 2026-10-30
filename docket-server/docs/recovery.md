@@ -61,7 +61,7 @@ BACKUP_HEARTBEAT_URL=<ping URL from step 3>
 npm run backup -- create
 ```
 
-The heartbeat should turn green, and a `.backup` file should appear in both folders.
+The heartbeat should turn green, and a `.backup` file should appear in both folders. Compare the printed row counts with the live site, such as the number of tickets, to confirm `.env` points at the production database.
 
 **6. Schedule it**
 
@@ -91,11 +91,15 @@ Restore replaces all data in the target database. Restore the private key to a t
 1. Create a new Supabase project and a **private** Storage bucket with the same name as `SUPABASE_STORAGE_BUCKET`.
 2. Point `docket-server/.env` at the new project: `DATABASE_URL`, `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`.
 3. Check the newest backup, using the command above.
-4. Restore it, using the database host from the new `DATABASE_URL`:
+4. Run the restore without `--confirm` first. It changes nothing and prints which database it would replace, as `user@host`:
    ```powershell
-   npm run backup -- restore <file>.backup --key <private key file> --confirm <database host>
+   npm run backup -- restore <file>.backup --key <private key file>
    ```
-   The command prints the host to use if you leave out `--confirm`. If Storage isn't ready, add `--skip-attachments` to restore only the database, then rerun without it later.
+   The `user` part contains the Supabase project reference. Check that it's the new project's, because the host alone can be shared between projects. Then run it again with the printed value:
+   ```powershell
+   npm run backup -- restore <file>.backup --key <private key file> --confirm <user@host>
+   ```
+   If Storage isn't ready, add `--skip-attachments` to restore only the database, then rerun without it later.
 5. Update these on Render, then redeploy:
    - `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_STORAGE_BUCKET`
    - `AUTH_TOKEN_SECRET`, `RESEND_API_KEY`, `EMAIL_FROM`, `APP_URL`, `CORS_ORIGINS`
@@ -109,4 +113,14 @@ Restore replaces all data in the target database. Restore the private key to a t
 
 ## Test the restore
 
-Run this every few months, and after any schema change. Use a spare Supabase project, never production, and follow "Rebuild from a backup" through step 4, then check the row counts and an attachment.
+Run this every few months, and after any schema change. Use a spare Supabase project with a private Storage bucket, never production.
+
+Don't edit `.env` for a test: if it stayed pointed at the spare project, nightly backups would quietly copy the wrong database. Set the spare project's values for one PowerShell window instead, because these take priority over `.env`:
+
+```powershell
+$env:DATABASE_URL = '<spare project database URL>'
+$env:SUPABASE_URL = '<spare project URL>'
+$env:SUPABASE_SERVICE_ROLE_KEY = '<spare project service role key>'
+```
+
+In that same window, follow steps 3 and 4 of "Rebuild from a backup". Check the row counts and that an attachment is in the spare bucket, then close the window.

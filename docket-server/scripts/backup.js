@@ -4,7 +4,7 @@
 //   node scripts/backup.js keygen --out <folder>
 //   node scripts/backup.js create
 //   node scripts/backup.js check <file> --key <private key file>
-//   node scripts/backup.js restore <file> --key <private key file> --confirm <database host> [--skip-attachments]
+//   node scripts/backup.js restore <file> --key <private key file> --confirm <user@database host> [--skip-attachments]
 //
 // Modules that need the database or Storage are required inside each command,
 // so `keygen` and `check` work with neither configured.
@@ -173,10 +173,13 @@ async function check(file, { key }) {
 
 async function restore(file, { key, confirm, 'skip-attachments': skipAttachments }) {
   if (!file) throw new Error('restore needs a backup file');
-  const host = new URL(requireEnv('DATABASE_URL')).hostname;
   // Restore wipes the tables it replaces, so the target must be typed out.
-  if (confirm !== host) {
-    throw new Error(`This replaces all data in the database at ${host}. To go ahead, pass --confirm ${host}`);
+  // A Supabase pooler host is shared between projects, so it's the username,
+  // which carries the project ref, that identifies the database.
+  const { username, hostname } = new URL(requireEnv('DATABASE_URL'));
+  const target = `${username}@${hostname}`;
+  if (confirm !== target) {
+    throw new Error(`This replaces all data in the database ${target}. To go ahead, pass --confirm ${target}`);
   }
 
   const backup = await readBackup(file, key);
