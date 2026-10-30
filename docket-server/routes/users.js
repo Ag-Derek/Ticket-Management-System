@@ -3,6 +3,7 @@ const db = require('../db/connection');
 const { recordAuditLog } = require('../utils/audit');
 const { requireAuth } = require('../middleware/authenticate');
 const { createChallenge, MfaError, sendMfaError } = require('../utils/mfa');
+const { asyncHandler } = require('../utils/async-handler');
 
 const router = express.Router();
 
@@ -15,13 +16,13 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // and the user record come from POST /api/auth/mfa/verify. A new user's
 // row isn't created until then, so nobody can register someone else's
 // email.
-router.post('/', async (req, res) => {
+router.post('/', asyncHandler(async (req, res) => {
   const { full_name, email, phone, department, organization } = req.body || {};
 
-  if (!full_name || !full_name.trim()) {
+  if (typeof full_name !== 'string' || !full_name.trim()) {
     return res.status(400).json({ error: 'full_name is required' });
   }
-  if (!email || !EMAIL_RE.test(email.trim())) {
+  if (typeof email !== 'string' || !EMAIL_RE.test(email.trim())) {
     return res.status(400).json({ error: 'a valid email is required' });
   }
 
@@ -63,7 +64,7 @@ router.post('/', async (req, res) => {
     console.error('POST /api/users error:', err);
     res.status(500).json({ error: 'failed to save profile' });
   }
-});
+}));
 
 // POST /api/users/sign-in  { email }
 // Returning customers (login.html): email only, no profile fields. An
