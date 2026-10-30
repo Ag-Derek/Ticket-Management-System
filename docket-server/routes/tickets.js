@@ -82,14 +82,23 @@ const TICKET_SELECT = `
     WHERE tc.ticket_id = t.id AND tc.visibility = 'public'
   ) chat ON true`;
 
-async function ticketWithComments(id) {
+// Escalation details are notes between support staff, so a customer never
+// receives them, same as internal comments.
+function forActor(actor, ticket) {
+  if (actor.role !== 'user') return ticket;
+  const { escalated_to, escalation_reason, suggested_agent_id, ...visible } = ticket;
+  return visible;
+}
+
+async function ticketWithComments(id, actor) {
+  const visibilityFilter = actor.role === 'user' ? "AND visibility = 'public'" : '';
   const [ticketResult, commentsResult] = await Promise.all([
     db.query(`${TICKET_SELECT} WHERE t.id = $1`, [id]),
-    db.query('SELECT * FROM ticket_comments WHERE ticket_id = $1 ORDER BY created_at ASC', [id])
+    db.query(`SELECT * FROM ticket_comments WHERE ticket_id = $1 ${visibilityFilter} ORDER BY created_at ASC`, [id])
   ]);
   const ticket = ticketResult.rows[0];
   if (!ticket) return null;
-  return { ...ticket, comments: commentsResult.rows };
+  return { ...forActor(actor, ticket), comments: commentsResult.rows };
 }
 
 // ?limit= is capped so a single request can't ask for an unbounded page.
@@ -170,7 +179,7 @@ router.post('/', requireAuth(['user', 'admin']), asyncHandler(async (req, res) =
 
   notifyTicketCreated(id);
 
-  res.status(201).json(await ticketWithComments(id));
+  res.status(201).json(await ticketWithComments(id, req.actor));
 }));
 
 // GET /api/tickets?user_id=...&assigned_agent_id=...&status=...
@@ -223,10 +232,10 @@ router.get('/', requireAuth(), asyncHandler(async (req, res) => {
         db.query(`SELECT COUNT(*)::int AS n FROM tickets t ${where}`, params)
       ]);
       res.setHeader('X-Total-Count', String(countResult.rows[0].n));
-      return res.json(result.rows);
+      return res.json(result.rows.map((row) => forActor(req.actor, row)));
     }
     const result = await db.query(sql, pageParams);
-    res.json(result.rows);
+    res.json(result.rows.map((row) => forActor(req.actor, row)));
   } catch (err) {
     console.error('GET /api/tickets error:', err);
     res.status(500).json({ error: 'failed to load tickets' });
@@ -253,7 +262,7 @@ router.get(
     // requireTicketAccess; ticketWithComments re-fetches so it can attach
     // comments/attachments in the same shape as every other response.
     try {
-      res.json(await ticketWithComments(req.params.id));
+      res.json(await ticketWithComments(req.params.id, req.actor));
     } catch (err) {
       console.error('GET /api/tickets/:id error:', err);
       res.status(500).json({ error: 'failed to load ticket' });
@@ -329,7 +338,7 @@ router.patch('/:id/assign', requireAuth(['admin']), asyncHandler(async (req, res
   // Only a real change of assignee — re-saving the same agent shouldn't re-email them.
   if (assignedAgentId && assignedAgentId !== ticket.assigned_agent_id) notifyTicketAssigned(req.params.id);
 
-  res.json(await ticketWithComments(req.params.id));
+  res.json(await ticketWithComments(req.params.id, req.actor));
 }));
 
 // PATCH /api/tickets/:id/status
@@ -438,7 +447,7 @@ router.patch(
     // confirm-fix click, so emailing them about it would be redundant.
     if (status === 'Resolved') notifyTicketResolved(req.params.id);
 
-    res.json(await ticketWithComments(req.params.id));
+    res.json(await ticketWithComments(req.params.id, req.actor));
   })
 );
 
@@ -486,7 +495,7 @@ router.patch(
       details: { rating, comment: comment || undefined }
     });
 
-    res.json(await ticketWithComments(req.params.id));
+    res.json(await ticketWithComments(req.params.id, req.actor));
   })
 );
 
