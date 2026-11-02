@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: docket-server
+    # Dummy values so db/connection.js loads; test/setup.js sets the rest.
+    # The pool only connects on the first query, so no database is needed.
+    env:
+      DATABASE_URL: postgres://test:test@localhost:5432/test
+      DATABASE_SSL: 'false'
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same Node version as Render, which reads engines.node in package.json.
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: docket-server/package.json
+          cache: npm
+          cache-dependency-path: docket-server/package-lock.json
+
+      # better-sqlite3 is a dev dependency only used by the old SQLite
+      # migration; skipping it avoids a native build.
+      - run: npm ci --omit=dev
+
+      - run: npm test
