@@ -62,8 +62,11 @@ router.get('/summary', requireAuth(['admin']), asyncHandler(async (req, res) => 
   const { from, to } = req.query;
   const params = [];
   let where = 'WHERE 1=1';
-  if (from) { params.push(from); where += ` AND created_at >= $${params.length}`; }
-  if (to) { params.push(to); where += ` AND created_at <= $${params.length}`; }
+  // Same range for the agent workload join. It needs the t. prefix because
+  // agents has its own created_at.
+  let agentDateFilter = '';
+  if (from) { params.push(from); where += ` AND created_at >= $${params.length}`; agentDateFilter += ` AND t.created_at >= $${params.length}`; }
+  if (to) { params.push(to); where += ` AND created_at <= $${params.length}`; agentDateFilter += ` AND t.created_at <= $${params.length}`; }
 
   const [total, byStatus, byCategory, byPriority, csat, resolution, byAgent, sla] = await Promise.all([
     db.query(`SELECT COUNT(*) AS n FROM tickets ${where}`, params),
@@ -83,14 +86,17 @@ router.get('/summary', requireAuth(['admin']), asyncHandler(async (req, res) => 
        FROM tickets ${where} AND resolved_at IS NOT NULL`,
       params
     ),
+    // Date filter sits in the join, not a WHERE, so agents with no tickets
+    // in the range still show with 0.
     db.query(
       `SELECT a.id, a.full_name,
               COUNT(t.id) FILTER (WHERE t.status NOT IN ('Resolved', 'Closed')) AS open_count,
               COUNT(t.id) FILTER (WHERE t.status IN ('Resolved', 'Closed')) AS resolved_count
        FROM agents a
-       LEFT JOIN tickets t ON t.assigned_agent_id = a.id
+       LEFT JOIN tickets t ON t.assigned_agent_id = a.id ${agentDateFilter}
        GROUP BY a.id, a.full_name
-       ORDER BY a.full_name`
+       ORDER BY a.full_name`,
+      params
     ),
     // SLA outcomes per priority; the overall figures are summed from these
     // below. open_breached is tickets still open right now with a blown
