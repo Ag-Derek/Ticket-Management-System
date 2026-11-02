@@ -375,6 +375,11 @@ router.patch(
     if (req.actor.role === 'user' && !(ticket.status === 'Resolved' && (status === 'Closed' || status === 'Reopened'))) {
       return res.status(403).json({ error: 'Not authorized to make this change' });
     }
+    // Confirming or reopening a Resolved ticket is the customer's call. Admins
+    // can still step in if the customer never responds; agents can't.
+    if (req.actor.role === 'agent' && ticket.status === 'Resolved') {
+      return res.status(403).json({ error: 'Not authorized to make this change' });
+    }
 
     if (status === 'Resolved' && (!resolution_summary || !resolution_summary.trim())) {
       return res.status(400).json({ error: 'resolution_summary is required to resolve a ticket' });
