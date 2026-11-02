@@ -4,6 +4,9 @@
   "description": "API for the Docket support ticket portal, backed by Supabase (Postgres + Storage)",
   "main": "server.js",
   "type": "commonjs",
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "seed": "node db/seed.js",
     "start": "node server.js",
