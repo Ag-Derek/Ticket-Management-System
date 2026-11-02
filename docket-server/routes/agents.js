@@ -150,7 +150,8 @@ router.get('/:id/tickets', requireAuth(['admin']), async (req, res) => {
 
 // DELETE /api/agents/:id — admin-only. Any tickets still assigned to the
 // agent are unassigned first (back to Created, same as choosing
-// "Unassigned" in PATCH /tickets/:id/assign; Resolved/Closed stay put), and
+// "Unassigned" in PATCH /tickets/:id/assign, including resuming a paused SLA
+// clock; Resolved/Closed stay put), and
 // any escalation suggestion pointing at them is cleared, so no FK is left
 // dangling. Their login credentials and pending sign-in codes go too, and
 // any session they're signed in with stops working on its next request
@@ -166,6 +167,10 @@ router.delete('/:id', requireAuth(['admin']), async (req, res) => {
         `UPDATE tickets
          SET assigned_agent_id = NULL,
              status = CASE WHEN status IN ('Resolved', 'Closed') THEN status ELSE 'Created' END,
+             resolution_due_at = CASE WHEN sla_paused_at IS NOT NULL AND status NOT IN ('Resolved', 'Closed')
+                                      THEN resolution_due_at + (now() - sla_paused_at)
+                                      ELSE resolution_due_at END,
+             sla_paused_at = CASE WHEN status IN ('Resolved', 'Closed') THEN sla_paused_at ELSE NULL END,
              updated_at = now()
          WHERE assigned_agent_id = $1
          RETURNING id`,
