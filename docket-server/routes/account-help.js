@@ -11,7 +11,7 @@ const db = require('../db/connection');
 const { requireAuth } = require('../middleware/authenticate');
 const { asyncHandler } = require('../utils/async-handler');
 const { recordAuditLog, resolveActorName } = require('../utils/audit');
-const { sendEmail, escapeHtml, appLink, greetingFor } = require('../utils/email');
+const { sendEmail, escapeHtml, appLink, greetingFor, buttonHtml, MUTED } = require('../utils/email');
 
 const router = express.Router();
 
@@ -164,8 +164,6 @@ function maskEmail(email) {
   return `${local.slice(0, 1)}•••@${domain || ''}`;
 }
 
-const BUTTON_STYLE = 'display:inline-block;padding:10px 18px;background:#E8A33D;color:#1B1A17;font-weight:600;text-decoration:none;border-radius:6px';
-
 // The full reminder goes to the account's own inbox, which is safe whoever
 // asked: if it wasn't the owner, the owner just gets a harmless notice.
 async function sendAccountReminder(user) {
@@ -182,8 +180,8 @@ async function sendAccountReminder(user) {
     html:
       `<p>${escapeHtml(greeting)}</p>` +
       `<p>You asked us to help you find your Docket account. <strong>This email address (${escapeHtml(user.email)}) is the one it's under</strong> — use it to sign in and we'll send you a sign-in code here.</p>` +
-      (link ? `<p><a href="${escapeHtml(link)}" style="${BUTTON_STYLE}">Sign in</a></p>` : '') +
-      `<p style="color:#6B6A61">If you didn't ask for this, you can ignore this email. Nothing about your account has changed.</p>`
+      (link ? buttonHtml(link, 'Sign in') : '') +
+      `<p style="color:${MUTED}">If you didn't ask for this, you can ignore this email. Nothing about your account has changed.</p>`
   });
 }
 
@@ -202,7 +200,7 @@ async function sendContactPointer(request, user) {
     html:
       `<p>${escapeHtml(greeting)}</p>` +
       `<p>Thanks for your request — we found your Docket account. We've sent the sign-in details to the email address on the account, <strong>${escapeHtml(masked)}</strong>. Check that inbox (and its spam folder).</p>` +
-      `<p style="color:#6B6A61">If you no longer have access to that inbox, reply to let us know and we'll help you further.</p>`
+      `<p style="color:${MUTED}">If you no longer have access to that inbox, reply to let us know and we'll help you further.</p>`
   });
 }
 

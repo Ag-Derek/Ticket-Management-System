@@ -10,7 +10,7 @@
 // request (the customer would retry and create a duplicate ticket).
 
 const db = require('../db/connection');
-const { sendEmail, escapeHtml, appLink, greetingFor } = require('./email');
+const { sendEmail, escapeHtml, appLink, greetingFor, buttonHtml, detailRowsHtml, quoteHtml, MUTED } = require('./email');
 
 async function loadTicketWithRequester(ticketId) {
   const result = await db.query(
@@ -24,24 +24,12 @@ async function loadTicketWithRequester(ticketId) {
 
 function portalLinkHtml(label) {
   const url = appLink('portal.html');
-  return url ? `<p><a href="${escapeHtml(url)}">${escapeHtml(label)}</a></p>` : '';
+  return url ? buttonHtml(url, label) : '';
 }
 
 function portalLinkText(label) {
   const url = appLink('portal.html');
   return url ? `\n\n${label}: ${url}` : '';
-}
-
-function detailRowsHtml(rows) {
-  return (
-    '<table style="border-collapse:collapse;margin:16px 0">' +
-    rows
-      .map(([label, value]) =>
-        `<tr><td style="padding:4px 16px 4px 0;color:#6B6A61">${escapeHtml(label)}</td>` +
-        `<td style="padding:4px 0">${escapeHtml(value)}</td></tr>`)
-      .join('') +
-    '</table>'
-  );
 }
 
 async function sendTicketCreated(ticketId) {
@@ -93,8 +81,8 @@ async function sendTicketResolved(ticketId) {
     html:
       `<p>${escapeHtml(greetingFor(t.requester_name))}</p>` +
       `<p>Your ticket <strong>${escapeHtml(t.id)}</strong> (“${escapeHtml(t.subject)}”) has been marked resolved.</p>` +
-      `<p style="color:#6B6A61;margin-bottom:4px">Resolution</p>` +
-      `<blockquote style="margin:0 0 16px;padding:8px 12px;border-left:3px solid #D9D6CC;white-space:pre-wrap">${escapeHtml(summary)}</blockquote>` +
+      `<p style="color:${MUTED};margin-bottom:4px">Resolution</p>` +
+      quoteHtml(summary) +
       `<p>If that fixed it, please confirm in your portal so we can close the ticket. If not, you can reopen it from the same page.</p>` +
       portalLinkHtml('Open your portal')
   });
@@ -135,9 +123,9 @@ async function sendTicketAssigned(ticketId) {
       `<p>${escapeHtml(greetingFor(agent.full_name))}</p>` +
       `<p>A ticket has been assigned to you.</p>` +
       detailRowsHtml(rows) +
-      `<p style="color:#6B6A61;margin-bottom:4px">Description</p>` +
-      `<blockquote style="margin:0 0 16px;padding:8px 12px;border-left:3px solid #D9D6CC;white-space:pre-wrap">${escapeHtml(description)}</blockquote>` +
-      (url ? `<p><a href="${escapeHtml(url)}">Open your agent console</a></p>` : '')
+      `<p style="color:${MUTED};margin-bottom:4px">Description</p>` +
+      quoteHtml(description) +
+      (url ? buttonHtml(url, 'Open your agent console') : '')
   });
 }
 
