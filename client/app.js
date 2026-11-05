@@ -941,14 +941,33 @@ document.addEventListener('DOMContentLoaded', function () {
       // SLA clock — the server sets these; see docket-server/utils/sla.js.
       resolutionDueAt: row.resolution_due_at || null,
       resolvedAt: row.resolved_at || null,
-      slaPausedAt: row.sla_paused_at || null
+      slaPausedAt: row.sla_paused_at || null,
+      // Sent back with assign/status updates so the server can refuse one
+      // based on a stale copy (see rejectStaleTicket in routes/tickets.js).
+      version: row.version
     };
   }
 
   // What the agent/admin queue polls compare to decide whether a ticket
-  // changed enough to re-render.
+  // changed enough to re-render. The version keeps each ticket's copy current
+  // even for changes that leave status and assignee alone.
   function ticketSignature(t) {
-    return t.status + '|' + (t.assignedAgent || '');
+    return t.status + '|' + (t.assignedAgent || '') + '|' + t.version;
+  }
+
+  // Reads a ticket update response. A 409 means the ticket changed since it
+  // was loaded: the error carries the server's current copy as `latest` so the
+  // caller can show it in place of the stale one.
+  function readTicketUpdate(response, fallbackMessage) {
+    return response.json().then(function (data) {
+      if (response.status === 409) {
+        var conflict = new Error(data.error || 'This ticket has changed.');
+        if (data.ticket) conflict.latest = normalizeTicket(data.ticket);
+        throw conflict;
+      }
+      if (!response.ok) throw new Error(data.error || fallbackMessage);
+      return data;
+    });
   }
 
   // ---- SLA tracking ----
@@ -1048,18 +1067,13 @@ document.addEventListener('DOMContentLoaded', function () {
   // Created ticket makes it Assigned; unassigning anything that isn't
   // Resolved/Closed drops it back to Created), so the handlers below no longer
   // repeat that logic client-side — they render whatever comes back.
-  function assignTicket(ticketId, agentId, onDone, onError) {
-    fetch(API_BASE + '/api/tickets/' + encodeURIComponent(ticketId) + '/assign', {
+  function assignTicket(t, agentId, onDone, onError) {
+    fetch(API_BASE + '/api/tickets/' + encodeURIComponent(t.id) + '/assign', {
       method: 'PATCH',
       headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
-      body: JSON.stringify({ assigned_agent_id: agentId || null })
+      body: JSON.stringify({ assigned_agent_id: agentId || null, version: t.version })
     })
-      .then(function (response) {
-        return response.json().then(function (data) {
-          if (!response.ok) throw new Error(data.error || 'Unable to update the assignment.');
-          return data;
-        });
-      })
+      .then(function (response) { return readTicketUpdate(response, 'Unable to update the assignment.'); })
       .then(function (row) { onDone(normalizeTicket(row)); })
       .catch(function (err) {
         console.error('Assign error:', err);
@@ -1073,18 +1087,13 @@ document.addEventListener('DOMContentLoaded', function () {
   // for Escalated. Same shape as assignTicket(): the server is the source of
   // truth for the resulting row, so callers render whatever comes back
   // instead of trusting their own local mutation.
-  function changeTicketStatus(ticketId, body, onDone, onError) {
-    fetch(API_BASE + '/api/tickets/' + encodeURIComponent(ticketId) + '/status', {
+  function changeTicketStatus(t, body, onDone, onError) {
+    fetch(API_BASE + '/api/tickets/' + encodeURIComponent(t.id) + '/status', {
       method: 'PATCH',
       headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
-      body: JSON.stringify(body)
+      body: JSON.stringify(Object.assign({}, body, { version: t.version }))
     })
-      .then(function (response) {
-        return response.json().then(function (data) {
-          if (!response.ok) throw new Error(data.error || 'Unable to update the ticket status.');
-          return data;
-        });
-      })
+      .then(function (response) { return readTicketUpdate(response, 'Unable to update the ticket status.'); })
       .then(function (row) { onDone(normalizeTicket(row)); })
       .catch(function (err) {
         console.error('Status change error:', err);
@@ -1101,12 +1110,7 @@ document.addEventListener('DOMContentLoaded', function () {
       headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
       body: JSON.stringify({ csat_rating: rating, csat_comment: comment || null })
     })
-      .then(function (response) {
-        return response.json().then(function (data) {
-          if (!response.ok) throw new Error(data.error || 'Unable to submit feedback.');
-          return data;
-        });
-      })
+      .then(function (response) { return readTicketUpdate(response, 'Unable to submit feedback.'); })
       .then(function (row) { onDone(normalizeTicket(row)); })
       .catch(function (err) {
         console.error('CSAT submit error:', err);
@@ -1985,6 +1989,16 @@ document.addEventListener('DOMContentLoaded', function () {
       if (latest && latest.id === t.id) latest = t;
     }
 
+    // A refused update (409) carries the ticket as it is now: show that and
+    // say why nothing happened. False for any other error.
+    function showLatestPortalTicket(err) {
+      if (!err || !err.latest) return false;
+      persistPortalTicket(err.latest);
+      showTicketDetails(err.latest);
+      alert(err.message);
+      return true;
+    }
+
     // Profile sidebar
     var profileSidebar = document.getElementById('profileSidebar');
     if (profileSidebar) {
@@ -2105,12 +2119,13 @@ document.addEventListener('DOMContentLoaded', function () {
         var t = all.filter(function (x) { return x.id === currentTicketId; })[0];
         if (!t) return;
         confirmFixBtn.disabled = true;
-        changeTicketStatus(t.id, { status: 'Closed' }, function (updated) {
+        changeTicketStatus(t, { status: 'Closed' }, function (updated) {
           confirmFixBtn.disabled = false;
           persistPortalTicket(updated);
           showTicketDetails(updated);
         }, function (err) {
           confirmFixBtn.disabled = false;
+          if (showLatestPortalTicket(err)) return;
           alert(err.message || 'Unable to confirm the fix. Please try again.');
         });
       });
@@ -2122,12 +2137,13 @@ document.addEventListener('DOMContentLoaded', function () {
         var t = all.filter(function (x) { return x.id === currentTicketId; })[0];
         if (!t) return;
         reopenBtn.disabled = true;
-        changeTicketStatus(t.id, { status: 'Reopened' }, function (updated) {
+        changeTicketStatus(t, { status: 'Reopened' }, function (updated) {
           reopenBtn.disabled = false;
           persistPortalTicket(updated);
           showTicketDetails(updated);
         }, function (err) {
           reopenBtn.disabled = false;
+          if (showLatestPortalTicket(err)) return;
           alert(err.message || 'Unable to reopen the ticket. Please try again.');
         });
       });
@@ -2190,8 +2206,9 @@ document.addEventListener('DOMContentLoaded', function () {
         submitCsat(t.id, csatSelected, comment, function (updated) {
           replaceTicketIn(all, updated);
           showTicketDetails(updated);
-        }, function () {
+        }, function (err) {
           csatSubmitBtn.disabled = false;
+          if (showLatestPortalTicket(err)) return;
           alert('Could not submit your feedback — please try again.');
         });
       });
@@ -3174,14 +3191,28 @@ document.addEventListener('DOMContentLoaded', function () {
       return moves.some(function (m) { return m.to === to; });
     }
 
+    // A refused update (409) carries the ticket as it is now: show that in
+    // place of the stale copy and say why nothing happened. False for any
+    // other error, which the caller reports as before.
+    function showLatestAgentTicket(err) {
+      if (!err || !err.latest) return false;
+      replaceTicketIn(tickets, err.latest);
+      agentKnownSignature[err.latest.id] = ticketSignature(err.latest);
+      closePanels();
+      renderStats(); renderDetail(); renderList();
+      alert(err.message);
+      return true;
+    }
+
     function changeStatus(t, toStatus) {
       if (!isMine(t)) return;
       if (!canTransition(t.status, toStatus)) return;
-      changeTicketStatus(t.id, { status: toStatus }, function (updated) {
+      changeTicketStatus(t, { status: toStatus }, function (updated) {
         replaceTicketIn(tickets, updated);
         agentKnownSignature[updated.id] = ticketSignature(updated);
         renderStats(); renderDetail(); renderList();
       }, function (err) {
+        if (showLatestAgentTicket(err)) return;
         alert(err.message || 'Unable to update the ticket status.');
       });
     }
@@ -3360,7 +3391,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
       clearPanelError(reassignPanel);
       confirmBtn.disabled = true;
-      assignTicket(t.id, toId, function (updated) {
+      assignTicket(t, toId, function (updated) {
         confirmBtn.disabled = false;
         replaceTicketIn(tickets, updated);
         agentKnownSignature[updated.id] = ticketSignature(updated);
@@ -3372,6 +3403,7 @@ document.addEventListener('DOMContentLoaded', function () {
         renderStats(); renderDetail(); renderList();
       }, function (err) {
         confirmBtn.disabled = false;
+        if (showLatestAgentTicket(err)) return;
         showPanelError(reassignPanel, err.message || 'Unable to update the assignment.');
       });
     });
@@ -3390,7 +3422,7 @@ document.addEventListener('DOMContentLoaded', function () {
       var toName = agentNameForId(toId);
       var escalateConfirmBtnEl = document.getElementById('escalateConfirmBtn');
       escalateConfirmBtnEl.disabled = true;
-      changeTicketStatus(t.id, { status: 'Escalated', escalated_to: toName, escalation_reason: reason, suggested_agent_id: toId }, function (updated) {
+      changeTicketStatus(t, { status: 'Escalated', escalated_to: toName, escalation_reason: reason, suggested_agent_id: toId }, function (updated) {
         escalateConfirmBtnEl.disabled = false;
         replaceTicketIn(tickets, updated);
         agentKnownSignature[updated.id] = ticketSignature(updated);
@@ -3399,6 +3431,7 @@ document.addEventListener('DOMContentLoaded', function () {
         renderStats(); renderDetail(); renderList();
       }, function (err) {
         escalateConfirmBtnEl.disabled = false;
+        if (showLatestAgentTicket(err)) return;
         showPanelError(escalatePanel, err.message || 'Unable to escalate this ticket.');
       });
     });
@@ -3423,7 +3456,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         clearPanelError(resolvePanel);
         resolveConfirmBtn.disabled = true;
-        changeTicketStatus(t.id, { status: 'Resolved', resolution_summary: summary }, function (updated) {
+        changeTicketStatus(t, { status: 'Resolved', resolution_summary: summary }, function (updated) {
           resolveConfirmBtn.disabled = false;
           replaceTicketIn(tickets, updated);
           agentKnownSignature[updated.id] = ticketSignature(updated);
@@ -3432,6 +3465,7 @@ document.addEventListener('DOMContentLoaded', function () {
           renderStats(); renderDetail(); renderList();
         }, function (err) {
           resolveConfirmBtn.disabled = false;
+          if (showLatestAgentTicket(err)) return;
           showPanelError(resolvePanel, err.message || 'Unable to resolve this ticket.');
         });
       });
@@ -3637,7 +3671,7 @@ document.addEventListener('DOMContentLoaded', function () {
       if (!t) return;
       var btn = document.getElementById('assignToMeBtn');
       btn.disabled = true; // re-enabled by renderDetail on success
-      assignTicket(t.id, agent.id, function (updated) {
+      assignTicket(t, agent.id, function (updated) {
         replaceTicketIn(tickets, updated);
         // Keep the poll's signature in step so it doesn't re-render on top of
         // a change this tab just made.
@@ -3645,6 +3679,7 @@ document.addEventListener('DOMContentLoaded', function () {
         renderStats(); renderDetail(); renderList();
       }, function (err) {
         btn.disabled = false;
+        if (showLatestAgentTicket(err)) return;
         alert(err.message || 'Unable to assign this ticket.');
       });
     });
@@ -4223,7 +4258,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
       clearPanelError(adminAssignPanel);
       confirmBtn.disabled = true;
-      assignTicket(t.id, toId, function (updated) {
+      assignTicket(t, toId, function (updated) {
         confirmBtn.disabled = false;
         replaceTicketIn(adminTickets, updated);
         adminKnownSignature[updated.id] = ticketSignature(updated);
@@ -4235,6 +4270,15 @@ document.addEventListener('DOMContentLoaded', function () {
         renderAdminStats(); renderAdminDetail(); renderAdminList();
       }, function (err) {
         confirmBtn.disabled = false;
+        if (err && err.latest) {
+          // Refused as stale (409): show the ticket as it is now.
+          replaceTicketIn(adminTickets, err.latest);
+          adminKnownSignature[err.latest.id] = ticketSignature(err.latest);
+          closeAdminAssignPanel();
+          renderAdminStats(); renderAdminDetail(); renderAdminList();
+          alert(err.message);
+          return;
+        }
         showPanelError(adminAssignPanel, err.message || 'Unable to update the assignment.');
       });
     });

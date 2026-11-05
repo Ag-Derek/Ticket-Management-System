@@ -126,6 +126,12 @@ CREATE TABLE IF NOT EXISTS tickets (
 -- already exists without this column — add it separately, idempotently.
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS suggested_agent_id TEXT REFERENCES agents(id);
 
+-- Bumped by every change to the ticket itself (assignment, status, CSAT) so
+-- PATCH /:id/assign and /:id/status can refuse an update based on a stale
+-- copy. Not updated_at: that also moves on every comment, which would make
+-- a chat reply look like a conflicting edit.
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 0;
+
 -- When the ticket was (most recently) marked Resolved, and when the customer
 -- closed it. Reports measure resolution time from these rather than
 -- updated_at, which also moves on every comment, reassignment and CSAT

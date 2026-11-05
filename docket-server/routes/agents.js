@@ -171,12 +171,13 @@ router.delete('/:id', requireAuth(['admin']), async (req, res) => {
                                       THEN resolution_due_at + (now() - sla_paused_at)
                                       ELSE resolution_due_at END,
              sla_paused_at = CASE WHEN status IN ('Resolved', 'Closed') THEN sla_paused_at ELSE NULL END,
+             version = version + 1,
              updated_at = now()
          WHERE assigned_agent_id = $1
          RETURNING id`,
         [agent.id]
       );
-      await client.query('UPDATE tickets SET suggested_agent_id = NULL WHERE suggested_agent_id = $1', [agent.id]);
+      await client.query('UPDATE tickets SET suggested_agent_id = NULL, version = version + 1 WHERE suggested_agent_id = $1', [agent.id]);
       await client.query(`DELETE FROM auth_credentials WHERE owner_type = 'agent' AND owner_id = $1`, [agent.id]);
       await client.query(`DELETE FROM mfa_challenges WHERE owner_type = 'agent' AND owner_id = $1`, [agent.id]);
       await client.query(`DELETE FROM password_reset_tokens WHERE owner_type = 'agent' AND owner_id = $1`, [agent.id]);
