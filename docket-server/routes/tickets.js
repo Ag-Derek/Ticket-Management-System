@@ -101,6 +101,22 @@ async function ticketWithComments(id, actor) {
   return { ...forActor(actor, ticket), comments: commentsResult.rows };
 }
 
+// Assign and status updates carry the ticket `version` the client loaded. If
+// the row has moved on since, the update is refused with a 409 that carries
+// the current ticket, so the client can show it instead of the stale copy.
+// Nothing is written, audited or emailed for a refused update.
+function parseExpectedVersion(body) {
+  const version = Number(body && body.version);
+  return Number.isInteger(version) ? version : null;
+}
+
+async function rejectStaleTicket(req, res) {
+  res.status(409).json({
+    error: 'This ticket has changed since you loaded it. The latest version is now shown.',
+    ticket: await ticketWithComments(req.params.id, req.actor)
+  });
+}
+
 // ?limit= is capped so a single request can't ask for an unbounded page.
 const MAX_PAGE_SIZE = 200;
 
@@ -281,6 +297,12 @@ router.patch('/:id/assign', requireAuth(['admin']), asyncHandler(async (req, res
   const ticket = ticketResult.rows[0];
   if (!ticket) return res.status(404).json({ error: 'not found' });
 
+  // Checked first so a stale request is told the ticket changed rather than
+  // getting a validation error about a state it never saw.
+  const expectedVersion = parseExpectedVersion(req.body);
+  if (expectedVersion === null) return res.status(400).json({ error: 'version is required' });
+  if (ticket.version !== expectedVersion) return rejectStaleTicket(req, res);
+
   // Resolved means it's sitting with the customer awaiting their confirm-fix/
   // reopen decision, and Closed is the end of the line — swapping the owning
   // agent on either doesn't make sense, same as the agent-side reassign panel
@@ -303,27 +325,31 @@ router.patch('/:id/assign', requireAuth(['admin']), asyncHandler(async (req, res
     newStatus = 'Created';
   }
 
+  let result;
   try {
     // Assigning (by anyone — this route is admin-only) consumes any
     // pending suggested_agent_id an agent left behind while escalating,
     // whether or not the admin actually went with that suggestion.
     // Unassigning a Waiting ticket drops it back to Created, which resumes
     // a paused SLA clock the same way PATCH /:id/status does.
-    await db.query(
+    // The version guard catches a change that landed after the read above.
+    result = await db.query(
       `UPDATE tickets
        SET assigned_agent_id = $1, status = $2, suggested_agent_id = NULL,
            resolution_due_at = CASE WHEN sla_paused_at IS NOT NULL AND NOT ($2 = ANY($4::text[]))
                                     THEN resolution_due_at + (now() - sla_paused_at)
                                     ELSE resolution_due_at END,
            sla_paused_at = CASE WHEN $2 = ANY($4::text[]) THEN sla_paused_at ELSE NULL END,
+           version = version + 1,
            updated_at = now()
-       WHERE id = $3`,
-      [assignedAgentId, newStatus, req.params.id, SLA_PAUSED_STATUSES]
+       WHERE id = $3 AND version = $5`,
+      [assignedAgentId, newStatus, req.params.id, SLA_PAUSED_STATUSES, expectedVersion]
     );
   } catch (err) {
     console.error('PATCH /:id/assign error:', err);
     return res.status(500).json({ error: 'failed to update assignment' });
   }
+  if (result.rowCount === 0) return rejectStaleTicket(req, res);
 
   recordAuditLog({
     actorType: req.actor.role,
@@ -364,6 +390,10 @@ router.patch(
   asyncHandler(async (req, res) => {
     const ticket = req.ticket;
 
+    const expectedVersion = parseExpectedVersion(req.body);
+    if (expectedVersion === null) return res.status(400).json({ error: 'version is required' });
+    if (ticket.version !== expectedVersion) return rejectStaleTicket(req, res);
+
     const { status, resolution_summary, escalated_to, escalation_reason, suggested_agent_id } = req.body || {};
     if (!status || !canTransition(ticket.status, status)) {
       return res.status(400).json({
@@ -395,6 +425,7 @@ router.patch(
       suggestedAgentId = suggested_agent_id;
     }
 
+    let result;
     try {
       // SLA clock (see utils/sla.js). Every right-hand side reads the row as
       // it was before this UPDATE:
@@ -404,7 +435,7 @@ router.patch(
       // - leaving any other paused status (except to Closed, where the clock
       //   no longer matters) pushes the due time back by the paused time.
       const { resolutionMinutes } = slaFor(ticket.priority);
-      await db.query(
+      result = await db.query(
         `UPDATE tickets
          SET status = $1,
              resolution_summary = COALESCE($2, resolution_summary),
@@ -422,15 +453,17 @@ router.patch(
              sla_paused_at = CASE WHEN $5 = ANY($8::text[]) THEN COALESCE(sla_paused_at, now())
                                   WHEN $5 = 'Closed' THEN sla_paused_at
                                   ELSE NULL END,
+             version = version + 1,
              updated_at = now()
-         WHERE id = $7`,
+         WHERE id = $7 AND version = $10`,
         [status, resolution_summary || null, escalated_to || null, escalation_reason || null, status, suggestedAgentId, req.params.id,
-          SLA_PAUSED_STATUSES, resolutionMinutes]
+          SLA_PAUSED_STATUSES, resolutionMinutes, expectedVersion]
       );
     } catch (err) {
       console.error('PATCH /:id/status error:', err);
       return res.status(500).json({ error: 'failed to update status' });
     }
+    if (result.rowCount === 0) return rejectStaleTicket(req, res);
 
     recordAuditLog({
       actorType: req.actor.role,
@@ -470,9 +503,9 @@ router.patch(
     if (ticket.status !== 'Closed') {
       return res.status(400).json({ error: 'ticket must be Closed before it can be rated' });
     }
-    if (ticket.csat_rating != null) {
-      return res.status(400).json({ error: 'ticket has already been rated' });
-    }
+    // A second submission (another tab, a double click) is a conflict, not
+    // bad input: the ticket already holds a rating.
+    if (ticket.csat_rating != null) return rejectStaleTicket(req, res);
 
     const rating = Number(req.body && req.body.csat_rating);
     if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
@@ -480,15 +513,18 @@ router.patch(
     }
     const comment = (req.body && req.body.csat_comment) || null;
 
+    let result;
     try {
-      await db.query(
-        `UPDATE tickets SET csat_rating = $1, csat_comment = $2, updated_at = now() WHERE id = $3`,
+      result = await db.query(
+        `UPDATE tickets SET csat_rating = $1, csat_comment = $2, version = version + 1, updated_at = now()
+         WHERE id = $3 AND csat_rating IS NULL`,
         [rating, comment, req.params.id]
       );
     } catch (err) {
       console.error('PATCH /:id/csat error:', err);
       return res.status(500).json({ error: 'failed to submit feedback' });
     }
+    if (result.rowCount === 0) return rejectStaleTicket(req, res);
 
     recordAuditLog({
       actorType: req.actor.role,
