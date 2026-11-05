@@ -19,7 +19,7 @@
 // server instance sends at a time, so scaling out never double-emails.
 
 const db = require('../db/connection');
-const { sendEmail, escapeHtml, appLink, greetingFor } = require('./email');
+const { sendEmail, escapeHtml, appLink, greetingFor, buttonHtml, quoteHtml, MUTED } = require('./email');
 const { unreadBaseline } = require('./unread');
 
 const REMINDER_MINUTES = process.env.MESSAGE_REMINDER_MINUTES === undefined
@@ -99,9 +99,9 @@ async function sendReminder(client, due) {
     html:
       `<p>${escapeHtml(greetingFor(recipient.full_name))}</p>` +
       `<p>${escapeHtml(lead)}</p>` +
-      `<p style="color:#6B6A61;margin-bottom:4px">${escapeHtml(latest.author_name)} wrote:</p>` +
-      `<blockquote style="margin:0 0 16px;padding:8px 12px;border-left:3px solid #D9D6CC;white-space:pre-wrap">${escapeHtml(preview)}</blockquote>` +
-      (link ? `<p><a href="${escapeHtml(link)}">Open the conversation</a></p>` : '')
+      `<p style="color:${MUTED};margin-bottom:4px">${escapeHtml(latest.author_name)} wrote:</p>` +
+      quoteHtml(preview) +
+      (link ? buttonHtml(link, 'Open the conversation') : '')
   });
   return true;
 }

@@ -18,7 +18,7 @@
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const db = require('../db/connection');
-const { sendEmail, escapeHtml, appLink, greetingFor } = require('./email');
+const { sendEmail, escapeHtml, appLink, greetingFor, buttonHtml, MUTED } = require('./email');
 const { revokeSessions } = require('../middleware/authenticate');
 
 const TOKEN_TTL_MINUTES = 30;
@@ -62,9 +62,9 @@ async function sendResetEmail(owner, link) {
     html:
       `<p>${escapeHtml(greeting)}</p>` +
       `<p>Someone (hopefully you) asked to reset your Docket password.</p>` +
-      `<p><a href="${escapeHtml(link)}" style="display:inline-block;padding:10px 18px;background:#E8A33D;color:#1B1A17;font-weight:600;text-decoration:none;border-radius:6px">Choose a new password</a></p>` +
+      buttonHtml(link, 'Choose a new password') +
       `<p>The link expires in ${TOKEN_TTL_MINUTES} minutes and works once.</p>` +
-      `<p style="color:#6B6A61">If you didn't ask for this, ignore this email — your password stays the same.</p>`
+      `<p style="color:${MUTED}">If you didn't ask for this, ignore this email — your password stays the same.</p>`
   });
 }
 
@@ -79,7 +79,7 @@ async function sendPasswordChangedEmail(owner) {
     html:
       `<p>${escapeHtml(greeting)}</p>` +
       `<p>The password for your Docket account was just changed using a reset link.</p>` +
-      `<p style="color:#6B6A61">If this wasn't you, contact your administrator right away.</p>`
+      `<p style="color:${MUTED}">If this wasn't you, contact your administrator right away.</p>`
   });
 }
 

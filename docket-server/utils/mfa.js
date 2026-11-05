@@ -20,7 +20,7 @@
 
 const crypto = require('crypto');
 const db = require('../db/connection');
-const { sendEmail, escapeHtml, greetingFor } = require('./email');
+const { sendEmail, escapeHtml, greetingFor, MUTED } = require('./email');
 
 const CODE_LENGTH = 6;
 const CODE_TTL_MINUTES = 10;
@@ -74,7 +74,7 @@ async function sendCodeEmail(email, fullName, code) {
       `<p>Your Docket sign-in code is:</p>` +
       `<p style="font-size:28px;font-weight:700;letter-spacing:6px;margin:16px 0">${code}</p>` +
       `<p>It expires in ${CODE_TTL_MINUTES} minutes.</p>` +
-      `<p style="color:#6B6A61">If you didn't try to sign in, you can ignore this email — no one can get in without this code.</p>`
+      `<p style="color:${MUTED}">If you didn't try to sign in, you can ignore this email — no one can get in without this code.</p>`
   });
 }
 
