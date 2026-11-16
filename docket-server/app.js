@@ -7,6 +7,8 @@ const rateLimit = require('express-rate-limit');
 const db = require('./db/connection');
 
 const app = express();
+// Avoid disclosing the API framework in HTTP response headers.
+app.disable('x-powered-by');
 
 // Set by server.js once database setup has succeeded. Until then the server
 // is up but can't serve anything that needs the database.
@@ -143,6 +145,12 @@ app.use('/api/audit-logs', require('./routes/audit-logs'));
 app.use('/api/reports', require('./routes/reports'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/account-help', require('./routes/account-help'));
+
+// Unknown routes: answer in the usual { error } shape rather than Express's
+// default "Cannot GET ..." HTML page, which also identifies the framework.
+app.use((req, res) => {
+  res.status(404).json({ error: 'Not found' });
+});
 
 // Catch-all: anything forwarded via next(err) — including every rejected
 // promise from an asyncHandler-wrapped route — lands here instead of

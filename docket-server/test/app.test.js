@@ -15,6 +15,20 @@ test.before(async () => {
 
 test.after(() => new Promise((resolve) => server.close(resolve)));
 
+test('responses do not reveal Express through X-Powered-By', async () => {
+  const res = await fetch(`${baseUrl}/`);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.has('x-powered-by'), false);
+});
+
+test('unknown routes return a JSON 404 instead of the Express HTML page', async () => {
+  const res = await fetch(`${baseUrl}/no-such-route`);
+  assert.equal(res.status, 404);
+  assert.match(res.headers.get('content-type'), /^application\/json/);
+  assert.deepEqual(await res.json(), { error: 'Not found' });
+  assert.equal(res.headers.has('x-powered-by'), false);
+});
+
 test('/api/health returns 503 before the server is ready', async () => {
   const res = await fetch(`${baseUrl}/api/health`);
   assert.equal(res.status, 503);
