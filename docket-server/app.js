@@ -146,6 +146,12 @@ app.use('/api/reports', require('./routes/reports'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/account-help', require('./routes/account-help'));
 
+// Unknown routes: answer in the usual { error } shape rather than Express's
+// default "Cannot GET ..." HTML page, which also identifies the framework.
+app.use((req, res) => {
+  res.status(404).json({ error: 'Not found' });
+});
+
 // Catch-all: anything forwarded via next(err) — including every rejected
 // promise from an asyncHandler-wrapped route — lands here instead of
 // crashing the process or falling through to Express's default HTML error
