@@ -18,10 +18,13 @@ async function seedAdmin() {
   const initialPassword = process.env.ADMIN_PASSWORD;
   const adminId = 'ADM-2026-000001';
   // Must be a mailbox someone can read: the login MFA code and password
-  // reset links are sent here.
+  // reset links are sent here. If it isn't set, skip the seed rather than
+  // guess an address: a fallback would move the admin (and its sign-in
+  // codes) to whoever owns that address. Warn instead of throwing, because
+  // server.js retries a failed seed and the API would stay on 503.
   const adminEmail = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
   if (!adminEmail) {
-    console.warn('ADMIN_EMAIL is not set — skipping admin seed; existing admin account is unchanged.');
+    console.warn('ADMIN_EMAIL is not set — skipping admin seed. An existing admin account is left unchanged; on a new database no admin is created until it is set.');
     return;
   }
 
