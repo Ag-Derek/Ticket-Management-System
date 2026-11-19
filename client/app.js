@@ -320,6 +320,10 @@ document.addEventListener('DOMContentLoaded', function () {
   // no-object-storage architecture — fine for the file sizes a support
   // ticket realistically carries, not meant for large uploads.
   var MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024; // 5MB per file — matches the server-side cap
+  // 7MB across all files in one message. The server's express.json()
+  // limit is 10MB for the whole body; base64 inflates 7MB to ~9.3MB,
+  // which leaves room for the message text and the rest of the JSON.
+  var MAX_TOTAL_ATTACHMENT_BYTES = 7 * 1024 * 1024;
 
   // Reads a single File into the shape the API expects:
   // { filename, content_base64, mime_type, size_bytes }. Rejects anything
@@ -346,6 +350,22 @@ document.addEventListener('DOMContentLoaded', function () {
       reader.onerror = function () { reject(new Error('Unable to read "' + file.name + '".')); };
       reader.readAsDataURL(file);
     });
+  }
+
+  // Reads every selected file for one ticket or chat message. Checks each
+  // file's size first (so a single oversized file gets the per-file
+  // message), then the combined size, before reading anything — so an
+  // upload the server would reject with a 413 never gets sent.
+  function readFilesAsAttachments(files) {
+    for (var i = 0; i < files.length; i++) {
+      // readFileAsAttachment rejects an oversized file without reading it.
+      if (files[i].size > MAX_ATTACHMENT_BYTES) return readFileAsAttachment(files[i]);
+    }
+    var total = files.reduce(function (sum, f) { return sum + f.size; }, 0);
+    if (total > MAX_TOTAL_ATTACHMENT_BYTES) {
+      return Promise.reject(new Error('Attachments can total up to 7MB per message.'));
+    }
+    return Promise.all(files.map(readFileAsAttachment));
   }
 
   // GET /api/attachments/:id requires an Authorization header, which a
@@ -1913,10 +1933,10 @@ document.addEventListener('DOMContentLoaded', function () {
       setTimeout(function () { animationDone = true; maybeGoToPortal(); }, 2600);
 
       // Read every selected file into base64 before the POST — a read
-      // failure (e.g. over the 5MB cap) aborts the submission the same way
-      // a validation error does, rather than sending a partial attachment
-      // list.
-      Promise.all(files.map(readFileAsAttachment))
+      // failure (e.g. over the 5MB-per-file or 7MB-total cap) aborts the
+      // submission the same way a validation error does, rather than
+      // sending a partial attachment list.
+      readFilesAsAttachments(files)
         .then(function (attachments) {
           return fetch(API_BASE + '/api/tickets', {
             method: 'POST',
@@ -2388,7 +2408,7 @@ document.addEventListener('DOMContentLoaded', function () {
         },
         {
           words: ['attach', 'attachment', 'attachments', 'upload', 'screenshot', 'screenshots', 'file', 'files', 'logs'],
-          answer: "You can attach screenshots, logs or documents on the new ticket form, up to <strong>5MB per file</strong>. " +
+          answer: "You can attach screenshots, logs or documents on the new ticket form, up to <strong>5MB per file</strong> and <strong>7MB in total</strong> per message. " +
             "You can also send files to the agent in a ticket's chat.",
           buttons: [{ label: 'Create a ticket', href: 'ticket.html' }]
         },
@@ -4008,7 +4028,7 @@ document.addEventListener('DOMContentLoaded', function () {
       // Same read-before-send pattern as ticket creation: the files are
       // read into base64 client-side, then posted alongside the message
       // text in one comment.
-      Promise.all(filesToSend.map(readFileAsAttachment))
+      readFilesAsAttachments(filesToSend)
         .then(function (attachments) {
           postComment(chatTicket.id, chatRole, chatActorName, text, visibility, attachments, function (comment) {
             chatSendBtn.disabled = false;
