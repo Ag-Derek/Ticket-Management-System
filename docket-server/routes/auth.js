@@ -140,6 +140,45 @@ router.post('/login', async (req, res) => {
   }
 });
 
+const PROFILE_FIELDS = ['full_name', 'phone', 'department', 'organization'];
+
+// A returning customer who submitted the profile form (POST /api/users)
+// carries their new details in context.pending. Apply them here, after the
+// code is verified, so nobody can change an account they don't control.
+// COALESCE keeps the current value for any field left blank (null).
+// Email-only sign-in (POST /api/users/sign-in) has no pending, so never
+// reaches this.
+async function applyProfileUpdate(current, pending) {
+  const values = PROFILE_FIELDS.map((f) => pending[f] || null);
+  const changed = PROFILE_FIELDS.filter((f, i) => values[i] !== null && values[i] !== current[f]);
+  if (!changed.length) return current;
+
+  const result = await db.query(
+    `UPDATE users SET
+       full_name    = COALESCE($2, full_name),
+       phone        = COALESCE($3, phone),
+       department   = COALESCE($4, department),
+       organization = COALESCE($5, organization)
+     WHERE id = $1 RETURNING *`,
+    [current.id, ...values]
+  );
+  const updated = result.rows[0] || current;
+
+  const changes = {};
+  for (const f of changed) changes[f] = { from: current[f], to: updated[f] };
+  recordAuditLog({
+    actorType: 'user',
+    actorId: updated.id,
+    actorName: updated.full_name,
+    action: 'user.profile_updated',
+    entityType: 'user',
+    entityId: updated.id,
+    details: { changes }
+  });
+
+  return updated;
+}
+
 // Finds the account a verified challenge belongs to — or, for a first-time
 // customer sign-up, creates it now that the email is proven. Agents and
 // admins are never created here: agents are invite-only (an admin adds
@@ -148,12 +187,15 @@ router.post('/login', async (req, res) => {
 async function resolveChallengeOwner(challenge) {
   const table = OWNER_TABLES.find((t) => t.ownerType === challenge.owner_type).table;
 
+  const pending = challenge.context.pending;
+
   if (challenge.owner_id) {
     const result = await db.query(`SELECT * FROM ${table} WHERE id = $1`, [challenge.owner_id]);
-    return { record: result.rows[0], created: false };
+    const current = result.rows[0];
+    if (!current || !pending || table !== 'users') return { record: current, created: false };
+    return { record: await applyProfileUpdate(current, pending), created: false };
   }
 
-  const pending = challenge.context.pending;
   if (!pending || table !== 'users') return { record: null, created: false };
 
   // Two sign-ups for the same new email can both reach here; the second one
