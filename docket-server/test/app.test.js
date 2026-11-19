@@ -54,3 +54,14 @@ test('malformed JSON returns 400 in the { error } shape', async () => {
   assert.match(res.headers.get('content-type'), /application\/json/);
   assert.deepEqual(await res.json(), { error: 'Malformed request body.' });
 });
+
+test('a body over the 10MB limit returns 413 with the total-size message', async () => {
+  const res = await fetch(`${baseUrl}/api/tickets`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ attachments: [{ content_base64: 'A'.repeat(11 * 1024 * 1024) }] })
+  });
+  assert.equal(res.status, 413);
+  assert.match(res.headers.get('content-type'), /application\/json/);
+  assert.deepEqual(await res.json(), { error: 'Attachments can total up to 7MB per message.' });
+});
