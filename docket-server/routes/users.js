@@ -9,6 +9,11 @@ const router = express.Router();
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+// Trimmed string, or null when missing or blank.
+function optionalField(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
 // POST /api/users
 // Sign-in / sign-up for customers, who have no password: the emailed MFA
 // code is the credential. Either way (new or returning email) this only
@@ -34,20 +39,30 @@ router.post('/', asyncHandler(async (req, res) => {
     const existingResult = await db.query('SELECT * FROM users WHERE lower(email) = $1', [normalizedEmail]);
     const existing = existingResult.rows[0];
 
+    // Blank optional fields are stored as null. For a returning customer,
+    // resolveChallengeOwner (routes/auth.js) applies these with COALESCE
+    // only after the emailed code is verified, so null keeps the current
+    // value and nothing changes here.
+    const pending = {
+      full_name: full_name.trim(),
+      phone: optionalField(phone),
+      department: optionalField(department),
+      organization: optionalField(organization)
+    };
+
     const challenge = existing
-      ? await createChallenge({ ownerType: 'user', ownerId: existing.id, email: normalizedEmail, fullName: existing.full_name })
+      ? await createChallenge({
+          ownerType: 'user',
+          ownerId: existing.id,
+          email: normalizedEmail,
+          fullName: existing.full_name,
+          context: { pending }
+        })
       : await createChallenge({
           ownerType: 'user',
           email: normalizedEmail,
           fullName: full_name.trim(),
-          context: {
-            pending: {
-              full_name: full_name.trim(),
-              phone: phone || null,
-              department: department || null,
-              organization: organization || null
-            }
-          }
+          context: { pending }
         });
 
     recordAuditLog({
