@@ -108,33 +108,71 @@ async function uploadAllOrNone(items, upload) {
   return results.map((r) => r.value).filter(Boolean);
 }
 
-// Validates one incoming attachment payload and — if it carries content —
-// uploads it immediately, before any DB row exists for it. Accepts the
-// { filename, content_base64, mime_type? } shape the client sends; also
-// tolerates a bare filename string or an object with no content_base64
-// (nothing to upload, so stored_path stays null).
-async function normalizeIncomingAttachment(ticketId, a) {
-  if (!a) return null;
-  if (typeof a === 'string') {
-    const filename = a.trim();
-    return filename ? { filename, mime_type: null, size_bytes: null, stored_path: null } : null;
-  }
-  const filename = a.filename && String(a.filename).trim();
-  if (!filename) return null;
-  if (!a.content_base64) {
-    return { filename, mime_type: a.mime_type || null, size_bytes: null, stored_path: null };
-  }
-  const { storedPath, sizeBytes } = await saveAttachmentFile(ticketId, filename, a.content_base64);
-  return { filename, mime_type: a.mime_type || null, size_bytes: sizeBytes, stored_path: storedPath };
+// Limits on what a single request may attach. ALLOWED_ATTACHMENT_EXTENSIONS
+// is mirrored in the `accept` attribute of the file inputs in
+// client/ticket.html and client/ticket-chat.html — keep them in sync.
+const MAX_ATTACHMENTS_PER_REQUEST = 5;
+const ALLOWED_ATTACHMENT_EXTENSIONS = [
+  'pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp',
+  'txt', 'csv', 'log',
+  'doc', 'docx', 'xls', 'xlsx'
+];
+
+function fileExtension(filename) {
+  const dot = filename.lastIndexOf('.');
+  return dot === -1 ? '' : filename.slice(dot + 1).toLowerCase();
 }
 
-// The request body's attachment list (ticket attachments or chat files),
-// validated and uploaded all-or-nothing. Anything that isn't an array is
-// treated as no attachments. Throws a user-facing error (e.g. over the size
-// cap) for the route to return as a 400.
+// Checks the whole attachment list before anything is uploaded, so a bad
+// entry anywhere in the list means nothing reaches Storage. Every entry must
+// be { filename, content_base64, mime_type? } with a non-empty filename and
+// content, and an allowed extension. Throws a user-facing error (returned by
+// the routes as a 400); returns the entries in a normalized shape.
+function validateIncomingAttachments(items) {
+  if (items === undefined || items === null) return [];
+  if (!Array.isArray(items)) {
+    throw new Error('attachments must be a list of files.');
+  }
+  if (items.length > MAX_ATTACHMENTS_PER_REQUEST) {
+    throw new Error(`You can attach at most ${MAX_ATTACHMENTS_PER_REQUEST} files at a time.`);
+  }
+  return items.map((a, i) => {
+    if (!a || typeof a !== 'object') {
+      throw new Error(`Attachment ${i + 1} is not a valid file.`);
+    }
+    const filename = typeof a.filename === 'string' ? a.filename.trim() : '';
+    if (!filename) {
+      throw new Error(`Attachment ${i + 1} has no filename.`);
+    }
+    if (typeof a.content_base64 !== 'string' || !a.content_base64) {
+      throw new Error(`"${filename}" has no file content.`);
+    }
+    if (!ALLOWED_ATTACHMENT_EXTENSIONS.includes(fileExtension(filename))) {
+      throw new Error(
+        `"${filename}" is not an allowed file type. Allowed types: ${ALLOWED_ATTACHMENT_EXTENSIONS.join(', ')}.`
+      );
+    }
+    return {
+      filename,
+      content_base64: a.content_base64,
+      mime_type: typeof a.mime_type === 'string' && a.mime_type ? a.mime_type : null
+    };
+  });
+}
+
+// Uploads one already-validated attachment, before any DB row exists for it.
+async function uploadValidatedAttachment(ticketId, a) {
+  const { storedPath, sizeBytes } = await saveAttachmentFile(ticketId, a.filename, a.content_base64);
+  return { filename: a.filename, mime_type: a.mime_type, size_bytes: sizeBytes, stored_path: storedPath };
+}
+
+// The request body's attachment list (ticket attachments or chat files):
+// validated as a whole first, then uploaded all-or-nothing. A missing list
+// means no attachments. Throws a user-facing error (bad entry, too many
+// files, disallowed type, over the size cap) for the route to return as a 400.
 async function uploadIncomingAttachments(ticketId, items) {
-  if (!Array.isArray(items)) return [];
-  return uploadAllOrNone(items, (a) => normalizeIncomingAttachment(ticketId, a));
+  const attachments = validateIncomingAttachments(items);
+  return uploadAllOrNone(attachments, (a) => uploadValidatedAttachment(ticketId, a));
 }
 
 // Inserts the rows for already-uploaded attachments, inside the caller's
@@ -160,8 +198,11 @@ module.exports = {
   removeAttachmentFiles,
   uploadAllOrNone,
   uploadIncomingAttachments,
+  validateIncomingAttachments,
   insertAttachmentRows,
   sanitizeFilename,
   MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENTS_PER_REQUEST,
+  ALLOWED_ATTACHMENT_EXTENSIONS,
   BUCKET
 };
