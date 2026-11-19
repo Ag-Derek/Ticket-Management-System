@@ -95,7 +95,7 @@ app.use(express.json({ limit: '10mb' }));
 // uses so the client can surface a real message.
 app.use((err, req, res, next) => {
   if (err && err.type === 'entity.too.large') {
-    return res.status(413).json({ error: 'Request too large — attachments are capped at 5MB each.' });
+    return res.status(413).json({ error: 'Attachments can total up to 7MB per message.' });
   }
   if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
     return res.status(400).json({ error: 'Malformed request body.' });
