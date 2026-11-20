@@ -78,7 +78,7 @@ router.post('/login', async (req, res) => {
       // guess its way through — ask the caller to disambiguate.
       console.error(`Login: email ${email} matches multiple owner types: ${matches.map((m) => m.ownerType).join(', ')}`);
       return res.status(409).json({
-        error: 'This email is associated with more than one account type. Specify which one to log in as.',
+        error: 'This email is associated with more than one account type. Specify which one to sign in as.',
         roles: matches.map((m) => m.ownerType)
       });
     }
@@ -136,7 +136,7 @@ router.post('/login', async (req, res) => {
   } catch (err) {
     if (err instanceof MfaError) return sendMfaError(res, err);
     console.error('POST /api/auth/login error:', err);
-    res.status(500).json({ error: 'failed to log in' });
+    res.status(500).json({ error: 'failed to sign in' });
   }
 });
 
