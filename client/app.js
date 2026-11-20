@@ -2500,7 +2500,7 @@ document.addEventListener('DOMContentLoaded', function () {
               answer: '<strong>One-to-one:</strong> select <strong>+</strong> (New Chat), search for the contact by name (or phone number on mobile), and start the chat.<br>' +
                 '<strong>Group chat:</strong> on desktop select <strong>+</strong> → <strong>Create WhatsApp Group Chat</strong>; on mobile, three-dot menu → <strong>Create group</strong> → WhatsApp. ' +
                 'Add contacts (at least one WhatsApp contact), name the group and create it.<br>' +
-                '• <strong>Create as native WhatsApp group</strong> (add-on) is limited to 8 WhatsApp contacts. Untick it for a standard chat with more.<br>' +
+                '• <strong>Create as native WhatsApp group</strong> (add-on) is limited to 8 WhatsApp contacts. Uncheck it for a standard chat with more.<br>' +
                 '• In a native group, each WhatsApp contact gets an invite link, taps <strong>Request to join</strong>, and is accepted automatically.'
             },
             {
@@ -2528,7 +2528,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 '1. They tap <strong>Continue</strong> in the chat.<br>' +
                 '2. Depending on the setup, they reply or tap to connect with you.<br>' +
                 '3. They can then chat securely with you on WhatsApp.<br>' +
-                'Message templates and flows can be customised.'
+                'Message templates and flows can be customized.'
             },
             {
               title: 'Adding WhatsApp contacts',
@@ -2551,7 +2551,7 @@ document.addEventListener('DOMContentLoaded', function () {
             {
               title: 'Ghana SMS: number format',
               words: ['number format', 'phone format', 'e.164', 'e164', '233', 'normalize', 'normalise', 'sanitize', 'sanitise', 'leading 0', 'leading zero', 'country code'],
-              answer: 'The SMS Integration Bridge normalises Ghanaian numbers before calling the provider:<br>' +
+              answer: 'The SMS Integration Bridge normalizes Ghanaian numbers before calling the provider:<br>' +
                 '• Strip spaces, dashes and the leading 0.<br>' +
                 '• Add the country code <strong>233</strong> (or +233, depending on the provider).<br>' +
                 '• Example: <strong>0244123456</strong> or <strong>+233 24 412 3456</strong> → <strong>233244123456</strong>'
@@ -2585,7 +2585,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 '1. A workflow or security event in Symphony triggers a 2FA request or account update.<br>' +
                 '2. A custom <strong>Symphony bot</strong> (BDK/REST API) catches the event.<br>' +
                 '3. The bot POSTs the phone number and message to the internal <strong>SMS Integration Bridge</strong>.<br>' +
-                "4. The bridge normalises the number and sends it over HTTPS (API key / Bearer token) to the customer's Ghanaian SMS provider, which delivers it through MTN, Telecel or AT."
+                "4. The bridge normalizes the number and sends it over HTTPS (API key / Bearer token) to the customer's Ghanaian SMS provider, which delivers it through MTN, Telecel or AT."
             }
           ]
         },
@@ -2928,7 +2928,7 @@ document.addEventListener('DOMContentLoaded', function () {
       }
 
       function signOutHelp() {
-        reply('Use <strong>Logout</strong> at the top right to sign out here. <strong>Sign out all devices</strong> ends your session everywhere, including this browser. Use it if you signed in on a shared or lost device.');
+        reply('Use <strong>Sign out</strong> at the top right to sign out here. <strong>Sign out all devices</strong> ends your session everywhere, including this browser. Use it if you signed in on a shared or lost device.');
       }
 
       function productsMenu() {
