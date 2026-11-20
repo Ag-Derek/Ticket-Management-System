@@ -127,16 +127,28 @@ async function completeReset(token, newPassword) {
   const passwordProblem = validatePassword(newPassword);
   if (passwordProblem) throw new PasswordResetError(400, passwordProblem);
 
-  const passwordHash = bcrypt.hashSync(newPassword, 10);
+  const tokenHash = hashToken(token);
+
+  // Cheap read-only check before the expensive hash, so dead links don't
+  // cost a bcrypt round. It doesn't claim the token — the UPDATE below does.
+  const live = await db.query(
+    `SELECT 1 FROM password_reset_tokens
+     WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()`,
+    [tokenHash]
+  );
+  if (!live.rows[0]) throw new PasswordResetError(400, 'This reset link is invalid or has expired.');
+
+  // Async so the event loop keeps serving other requests while it runs.
+  const passwordHash = await bcrypt.hash(newPassword, 10);
 
   return db.withTransaction(async (client) => {
-    // Claim the token first, atomically, so two submissions of the same
-    // link can't both succeed.
+    // Claim the token atomically, so two submissions of the same link can't
+    // both succeed (both may pass the check above).
     const claimed = await client.query(
       `UPDATE password_reset_tokens SET used_at = now()
        WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()
        RETURNING owner_type, owner_id`,
-      [hashToken(token)]
+      [tokenHash]
     );
     const row = claimed.rows[0];
     if (!row) throw new PasswordResetError(400, 'This reset link is invalid or has expired.');
