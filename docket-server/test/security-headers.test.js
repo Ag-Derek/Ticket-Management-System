@@ -4,7 +4,7 @@ const { readFileSync } = require('node:fs');
 const { join } = require('node:path');
 
 const clientDirectory = join(__dirname, '..', '..', 'client');
-// Normalised so the line-anchored checks also pass on a CRLF (Windows) checkout.
+// Normalized so the line-anchored checks also pass on a CRLF (Windows) checkout.
 const headers = readFileSync(join(clientDirectory, '_headers'), 'utf8').replace(/\r\n/g, '\n');
 const app = readFileSync(join(clientDirectory, 'app.js'), 'utf8');
 

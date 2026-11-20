@@ -157,7 +157,7 @@ router.patch('/:id', requireAuth(['admin']), asyncHandler(async (req, res) => {
 }));
 
 // "jane.doe@example.com" -> "j•••@example.com". What the requester's
-// contact address is told: enough to recognise the inbox, not enough to
+// contact address is told: enough to recognize the inbox, not enough to
 // hand an impostor the full account email.
 function maskEmail(email) {
   const [local, domain] = String(email).split('@');
