@@ -13,7 +13,9 @@
 //     MAX_CHALLENGES_PER_DAY per email per 24h, so an attacker can't just
 //     keep requesting fresh codes to guess against. Together that's at most
 //     100 guesses a day against 1,000,000 codes.
-//   - a new challenge expires any older unused one for the same email
+//   - a new challenge leaves older unused ones working, so a code that
+//     arrives late still signs you in; once any code for an email is used,
+//     the rest of that email's unused codes are expired
 //   - codes expire after CODE_TTL_MINUTES and are single-use
 // Only an HMAC of the code is stored — a database leak doesn't expose
 // live codes.
@@ -100,13 +102,9 @@ async function createChallenge({ ownerType, ownerId, email, fullName, context })
     throw new MfaError(429, 'Too many sign-in attempts today. Try again tomorrow or contact your administrator.');
   }
 
-  // Housekeeping, and invalidate any code still outstanding for this email.
+  // Housekeeping. Older unused codes for this email are left alone; they
+  // expire on their own, or when any one of them is used (verifyChallenge).
   await db.query(`DELETE FROM mfa_challenges WHERE created_at < now() - interval '1 day'`);
-  await db.query(
-    `UPDATE mfa_challenges SET expires_at = now()
-     WHERE owner_type = $1 AND email = $2 AND consumed_at IS NULL AND expires_at > now()`,
-    [ownerType, email]
-  );
 
   const id = crypto.randomUUID();
   const code = generateCode();
@@ -167,6 +165,13 @@ async function verifyChallenge(challengeId, code) {
   if (!consumed.rows[0]) {
     throw new MfaError(401, 'This code has already been used. Please sign in again.', { restart: true });
   }
+
+  // Signed in: any other code still outstanding for this email stops working.
+  await db.query(
+    `UPDATE mfa_challenges SET expires_at = now()
+     WHERE owner_type = $1 AND email = $2 AND id <> $3 AND consumed_at IS NULL AND expires_at > now()`,
+    [challenge.owner_type, challenge.email, challengeId]
+  );
 
   return challenge;
 }
