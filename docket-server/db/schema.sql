@@ -251,6 +251,18 @@ CREATE TABLE IF NOT EXISTS account_help_requests (
   CHECK (status IN ('open', 'resolved'))
 );
 
+-- Hit counts for the per-IP rate limits in app.js (see
+-- utils/rate-limit-store.js). Kept here instead of in process memory so a
+-- restart or deploy doesn't reset them and every instance shares one count.
+-- key is the limiter's prefix plus the client's IP. A row whose reset_at
+-- has passed is dead: the next hit starts a new window on it, and the
+-- cleanup in rate-limit-store.js deletes the ones nobody comes back to.
+CREATE TABLE IF NOT EXISTS rate_limits (
+  key       TEXT PRIMARY KEY,
+  hits      INTEGER NOT NULL,
+  reset_at  TIMESTAMPTZ NOT NULL
+);
+
 -- Session revocation. Every token carries the owner's token_version from
 -- when it was issued, and requireAuth rejects it once the stored value has
 -- moved on — so bumping this (password reset, "sign out everywhere") kills
@@ -275,6 +287,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at DESC)
 CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs(entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_actor ON audit_logs(actor_type, actor_id);
 CREATE INDEX IF NOT EXISTS idx_account_help_status ON account_help_requests(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_rate_limits_reset ON rate_limits(reset_at);
 
 -- Backfill resolved_at/closed_at for tickets that were already Resolved or
 -- Closed before those columns existed: the time of the last matching status
