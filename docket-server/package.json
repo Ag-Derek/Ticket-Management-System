@@ -20,7 +20,7 @@
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "docx": "^9.16.0",
-    "dotenv": "^17.4.2",
+    "dotenv": "^18.0.10",
     "express": "^4.21.0",
     "express-rate-limit": "^7.5.1",
     "pdfkit": "^0.21.0",
