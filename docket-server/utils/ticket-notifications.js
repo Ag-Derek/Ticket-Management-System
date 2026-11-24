@@ -103,7 +103,7 @@ async function sendTicketAssigned(ticketId) {
     ['Ticket', t.id],
     ['Subject', t.subject],
     ['Priority', t.priority],
-    ['Category', t.category],
+    ['Product', t.category],
     ['Requester', t.requester_email || '—'],
     ['Target', t.sla_summary || '—']
   ];
