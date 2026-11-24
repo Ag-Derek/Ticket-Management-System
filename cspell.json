@@ -16,7 +16,8 @@
   ],
   "ignoreRegExpList": [
     "HelpbotKeywords",
-    "PowerShellSwitches"
+    "PowerShellSwitches",
+    "ShortCommitHash"
   ],
   "patterns": [
     {
@@ -28,6 +29,11 @@
       "name": "PowerShellSwitches",
       "description": "PowerShell cmdlet switches such as -DontStopIfGoingOnBatteries.",
       "pattern": "/-Dont[A-Za-z]+/g"
+    },
+    {
+      "name": "ShortCommitHash",
+      "description": "Short commit hashes cited in CHANGELOG.md, such as eeadbaa, which can be all letters.",
+      "pattern": "/\\b[0-9a-f]{7}\\b/g"
     }
   ],
   "words": [
