@@ -46,6 +46,11 @@ router.get('/:id', requireAuth(['admin']), async (req, res) => {
 //     POST /api/auth/mfa/verify. Agents are invite-only: an email the admin
 //     hasn't added gets a 404 and no code, so nobody can make themselves
 //     an agent (and land in the assignment dropdown) just by signing in.
+//     That 404 does reveal whether an email has an agent account — a
+//     deliberate UX trade-off, as for customer sign-in in routes/users.js:
+//     the sign-in page needs it to tell someone they haven't been added
+//     yet, and the per-IP rate limit in server.js keeps it from being used
+//     to bulk-check addresses.
 //  2. Admin "add an agent" (admin-dashboard.html) — created_by: 'admin',
 //     requires an admin token, and a duplicate email is a hard error. No
 //     token is returned: the new agent signs in themselves, via MFA.
