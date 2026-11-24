@@ -19,6 +19,7 @@ async function setUp() {
   }
   app.locals.ready = true;
   require('./utils/message-reminders').startMessageReminders();
+  require('./utils/rate-limit-store').startRateLimitCleanup();
 }
 
 app.listen(PORT, '0.0.0.0', () => {

@@ -5,6 +5,7 @@ const express = require('express');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const db = require('./db/connection');
+const { PostgresRateLimitStore } = require('./utils/rate-limit-store');
 
 const app = express();
 // Avoid disclosing the API framework in HTTP response headers.
@@ -58,11 +59,19 @@ app.use((req, res, next) => {
 // utils/mfa.js and utils/password-reset.js stop guessing against one
 // account; this stops one client hammering many accounts (or the email
 // quota). Generous enough for an office of people behind one NAT address.
+//
+// Both limiters keep their counts in Postgres (utils/rate-limit-store.js),
+// each under its own key prefix, so restarts don't reset them. If the
+// database can't be reached the request goes through unlimited rather
+// than failing here; the readiness check below still answers 503 until
+// setup has finished.
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 60,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
+  store: new PostgresRateLimitStore({ prefix: 'auth:' }),
+  passOnStoreError: true,
   message: { error: 'Too many sign-in attempts from this network. Please wait a few minutes and try again.' }
 });
 app.use('/api/auth', authLimiter);
@@ -77,6 +86,8 @@ const accountHelpLimiter = rateLimit({
   limit: 5,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
+  store: new PostgresRateLimitStore({ prefix: 'account-help:' }),
+  passOnStoreError: true,
   message: { error: 'Too many requests from this network. Please try again in an hour.' }
 });
 app.post('/api/account-help', accountHelpLimiter);
