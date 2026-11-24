@@ -25,8 +25,9 @@ const { appLink } = require('../utils/email');
 const router = express.Router();
 
 // (table, owner_type) pairs to search for the email. Order doesn't imply
-// priority — an email existing in more than one table is treated as a
-// data problem (see below), not resolved by "first match wins".
+// priority — login requires a role so it only ever checks one table, and a
+// password reset without a role sends nothing when the email is on more
+// than one, rather than resolving it by "first match wins".
 const OWNER_TABLES = [
   { table: 'users', ownerType: 'user' },
   { table: 'agents', ownerType: 'agent' },
@@ -45,6 +46,12 @@ async function findOwnerByEmail(email, roleHint) {
   return candidates;
 }
 
+// A bcrypt hash (same cost as real ones, see db/seed.js) of a password
+// nobody uses. Failures that have no real hash to check still compare
+// against this, so an unknown email takes as long to reject as a wrong
+// password and the response time doesn't reveal which emails have accounts.
+const DUMMY_PASSWORD_HASH = '$2a$10$CWwGGA5C9P8zL5l5CXaNkeNHzsomWqNyCZsWFOme1venfB/8fmrm.';
+
 router.post('/login', async (req, res) => {
   const { password, role } = req.body || {};
   // Same normalization as POST /api/users and /api/agents, so " Admin@X.com"
@@ -54,36 +61,28 @@ router.post('/login', async (req, res) => {
   if (!email || !password) {
     return res.status(400).json({ error: 'email and password are required' });
   }
-  if (role && !OWNER_TABLES.some((t) => t.ownerType === role)) {
-    return res.status(400).json({ error: `role must be one of: ${OWNER_TABLES.map((t) => t.ownerType).join(', ')}` });
+  // role is required, so the lookup checks exactly one table and can match
+  // at most one account. Without it, an email on more than one account type
+  // would need its own response, which would reveal those account types.
+  if (!OWNER_TABLES.some((t) => t.ownerType === role)) {
+    return res.status(400).json({ error: `role is required and must be one of: ${OWNER_TABLES.map((t) => t.ownerType).join(', ')}` });
   }
 
   try {
-    const matches = await findOwnerByEmail(email, role);
+    const [owner] = await findOwnerByEmail(email, role);
 
-    if (matches.length === 0) {
+    if (!owner) {
+      await bcrypt.compare(String(password), DUMMY_PASSWORD_HASH);
       recordAuditLog({
-        actorType: role || 'unknown',
+        actorType: role,
         action: 'auth.login_failed',
         details: { email, reason: 'no such account' }
       });
-      // Same response as a wrong password — don't reveal whether the email
-      // exists at all.
+      // Same response (and roughly the same time) as a wrong password —
+      // don't reveal whether the email exists at all.
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    if (matches.length > 1) {
-      // The same email exists as e.g. both a user and an agent. That's a
-      // data-integrity issue, not something the login route should silently
-      // guess its way through — ask the caller to disambiguate.
-      console.error(`Login: email ${email} matches multiple owner types: ${matches.map((m) => m.ownerType).join(', ')}`);
-      return res.status(409).json({
-        error: 'This email is associated with more than one account type. Specify which one to sign in as.',
-        roles: matches.map((m) => m.ownerType)
-      });
-    }
-
-    const owner = matches[0];
     const credResult = await db.query(
       'SELECT * FROM auth_credentials WHERE owner_type = $1 AND owner_id = $2',
       [owner.ownerType, owner.id]
@@ -91,6 +90,7 @@ router.post('/login', async (req, res) => {
     const cred = credResult.rows[0];
 
     if (!cred || cred.auth_provider !== 'local' || !cred.password_hash) {
+      await bcrypt.compare(String(password), DUMMY_PASSWORD_HASH);
       recordAuditLog({
         actorType: owner.ownerType,
         actorId: owner.id,

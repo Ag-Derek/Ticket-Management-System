@@ -1551,27 +1551,25 @@ document.addEventListener('DOMContentLoaded', function () {
     var submitAgentLoginBtn = document.getElementById('submitAgentLogin');
     var submitAgentLoginDefaultLabel = submitAgentLoginBtn.textContent;
 
+    // Agents are added by an admin, so "forgot which email" just points
+    // them back to that admin rather than to the customer account-help form.
+    var agentForgotEmail = document.getElementById('agentForgotEmail');
+    var agentEmailHint = document.getElementById('agentEmailHint');
+    agentForgotEmail.addEventListener('click', function (e) {
+      e.preventDefault();
+      agentEmailHint.hidden = !agentEmailHint.hidden;
+      agentForgotEmail.setAttribute('aria-expanded', String(!agentEmailHint.hidden));
+    });
+
     submitAgentLoginBtn.addEventListener('click', function () {
       var email = document.getElementById('agentEmail');
-      var password = document.getElementById('agentPassword');
-      var valid = true;
 
       var emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.value.trim());
       if (!emailOk) {
         document.getElementById('f-agentEmail').classList.add('invalid');
-        valid = false;
-      } else {
-        document.getElementById('f-agentEmail').classList.remove('invalid');
+        return;
       }
-
-      if (!password.value.trim()) {
-        document.getElementById('f-agentPassword').classList.add('invalid');
-        valid = false;
-      } else {
-        document.getElementById('f-agentPassword').classList.remove('invalid');
-      }
-
-      if (!valid) return;
+      document.getElementById('f-agentEmail').classList.remove('invalid');
 
       var namePart = email.value.trim().split('@')[0].replace(/[._]/g, ' ');
       var displayName = namePart.replace(/\b\w/g, function (c) { return c.toUpperCase(); });
