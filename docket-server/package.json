@@ -22,7 +22,7 @@
     "docx": "^9.16.0",
     "dotenv": "^17.4.2",
     "express": "^4.21.0",
-    "express-rate-limit": "^7.5.1",
+    "express-rate-limit": "^8.7.5",
     "pdfkit": "^0.21.0",
     "pg": "^8.23.1"
   },
