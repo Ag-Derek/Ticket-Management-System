@@ -33,15 +33,10 @@
           <div class="err">Enter your work email address.</div>
         </div>
 
-        <div class="field" id="f-agentPassword">
-          <label for="agentPassword">Password</label>
-          <input type="password" id="agentPassword" placeholder="••••••••" autocomplete="current-password">
-          <div class="err">Enter your password.</div>
-        </div>
-
         <div class="field-link-row">
-          <a href="#" tabindex="-1">Forgot password?</a>
+          <a href="#" id="agentForgotEmail" aria-controls="agentEmailHint" aria-expanded="false">Forgot which email?</a>
         </div>
+        <p class="field-hint" id="agentEmailHint" hidden>Use the work email your administrator added you with. If you're not sure which one that is, ask them — they can see it in the admin console.</p>
 
         <div class="checkbox-row">
           <input type="checkbox" id="keepSignedIn">
@@ -50,7 +45,7 @@
 
         <button class="btn-amber" id="submitAgentLogin" type="button">Sign in</button>
 
-        <div class="note">Signing in with Microsoft Entra ID will replace this in a later phase. For now, any password is accepted, but you'll need to enter the 6-digit code we email to your work address to finish signing in. Agent accounts are created by an administrator — ask yours if you can't sign in.</div>
+        <div class="note">Signing in with Microsoft Entra ID will replace this in a later phase. For now, there's no password: you'll get a 6-digit code at your work address to finish signing in. Agent accounts are created by an administrator — ask yours if you can't sign in.</div>
       </div>
 
       <div class="stub agent-stub" id="agentStub">
