@@ -11,17 +11,20 @@ const { slaFor, slaSummary, SLA_PAUSED_STATUSES } = require('../utils/sla');
 
 const router = express.Router();
 
-const VALID_CATEGORIES = ['Network', 'Application', 'Hardware', 'Access & Identity'];
+// Tickets are categorized by product. The column is still called "category"
+// so existing rows and queries keep working; tickets filed before the switch
+// keep their old category (Network, Application, ...) as-is.
+const VALID_CATEGORIES = ['RiskFlow Calibre', 'Symphony', 'Orcaa.ai', 'Credit Studio & Onboard Studio'];
 const VALID_PRIORITIES = ['Low', 'Medium', 'High', 'Critical'];
 
 // Pulled directly from app.js's teamByCategory — the server is now the
 // single source of truth for this (and for SLA targets, see utils/sla.js),
 // so the client no longer needs (or should keep) its own copies.
 const TEAM_BY_CATEGORY = {
-  Network: 'Network Support',
-  Application: 'Application Support',
-  Hardware: 'Infrastructure',
-  'Access & Identity': 'Access & Identity'
+  'RiskFlow Calibre': 'RiskFlow Calibre Support',
+  Symphony: 'Symphony Support',
+  'Orcaa.ai': 'Orcaa.ai Support',
+  'Credit Studio & Onboard Studio': 'Credit Studio & Onboard Studio Support'
 };
 
 // Matches app.js's STATUS_TRANSITIONS exactly:

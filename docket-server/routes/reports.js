@@ -27,7 +27,7 @@ function compliancePct(met, breached) {
 const TICKET_COLUMNS = [
   { label: 'Ticket ID', value: 'id' },
   { label: 'Subject', value: 'subject' },
-  { label: 'Category', value: 'category' },
+  { label: 'Product', value: 'category' },
   { label: 'Priority', value: 'priority' },
   { label: 'Status', value: 'status' },
   { label: 'Assigned team', value: 'assigned_team' },

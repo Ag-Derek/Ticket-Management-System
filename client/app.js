@@ -2414,11 +2414,11 @@ document.addEventListener('DOMContentLoaded', function () {
         },
         {
           words: ['category', 'categories', 'which team', 'team', 'teams', 'department'],
-          answer: 'Pick the category closest to the problem. It decides which team gets the ticket:<br>' +
-            '<strong>Network</strong> (internet, Wi-Fi, VPN, connectivity): Network Support<br>' +
-            '<strong>Application</strong> (software errors, products like Symphony or RiskFlow): Application Support<br>' +
-            '<strong>Hardware</strong> (laptops, printers, devices): Infrastructure<br>' +
-            '<strong>Access &amp; Identity</strong> (accounts, permissions, locked out): Access &amp; Identity',
+          answer: 'Pick the product the problem is with. It decides which team gets the ticket:<br>' +
+            '<strong>RiskFlow Calibre</strong>: RiskFlow Calibre Support<br>' +
+            '<strong>Symphony</strong>: Symphony Support<br>' +
+            '<strong>Orcaa.ai</strong>: Orcaa.ai Support<br>' +
+            '<strong>Credit Studio &amp; Onboard Studio</strong>: Credit Studio &amp; Onboard Studio Support',
           buttons: [{ label: 'Create a ticket', href: 'ticket.html' }]
         },
         {
@@ -2444,6 +2444,7 @@ document.addEventListener('DOMContentLoaded', function () {
         // so a bare "sms" lands there.
         {
           name: 'Symphony',
+          category: 'Symphony',
           words: ['symphony', 'whatsapp', 'federation', 'sms', 'hubtel', 'mnotify', 'arkesel'],
           summary: '<strong>Symphony Messaging</strong> is a secure, compliant messaging platform for financial services. ' +
             'Its <strong>WhatsApp Federation</strong> channel lets you chat with external contacts on WhatsApp from Symphony, ' +
@@ -2594,6 +2595,7 @@ document.addEventListener('DOMContentLoaded', function () {
         // specific ones come before the general overview words.
         {
           name: 'RiskFlow',
+          category: 'RiskFlow Calibre',
           words: ['riskflow', 'risk flow', 'risk-flow', 'calibre', 'treasury management'],
           summary: '<strong>RiskFlow Calibre Treasury Management</strong> handles cash management, liquidity planning and FX trading, ' +
             'and connects securely to your Core Banking system. It runs on a secure multi-tier setup: firewalls, load balancers, ' +
@@ -2652,6 +2654,21 @@ document.addEventListener('DOMContentLoaded', function () {
                 '8. <strong>Treasury DB cluster</strong> (MS SQL), linked to the <strong>Core Banking system</strong> (T24)'
             }
           ]
+        },
+        // No guides yet: productHelp() offers an agent or a new ticket.
+        {
+          name: 'Orcaa.ai',
+          category: 'Orcaa.ai',
+          words: ['orcaa', 'orcaa.ai', 'orca'],
+          summary: '',
+          topics: []
+        },
+        {
+          name: 'Credit Studio & Onboard Studio',
+          category: 'Credit Studio & Onboard Studio',
+          words: ['credit studio', 'onboard studio', 'onboarding studio'],
+          summary: '',
+          topics: []
         }
       ];
 
@@ -2663,7 +2680,7 @@ document.addEventListener('DOMContentLoaded', function () {
       // tickets?", "show my high priority network tickets").
       var STATUS_WORDS = { 'escalated': 'Escalated', 'waiting': 'Waiting', 'resolved': 'Resolved', 'closed': 'Closed', 'reopened': 'Reopened', 'in progress': 'In Progress', 'assigned': 'Assigned' };
       var PRIORITY_WORDS = { 'critical': 'Critical', 'high': 'High', 'medium': 'Medium', 'low': 'Low' };
-      var CATEGORY_WORDS = { 'network': 'Network', 'application': 'Application', 'hardware': 'Hardware', 'access': 'Access & Identity' };
+      var CATEGORY_WORDS = { 'riskflow': 'RiskFlow Calibre', 'calibre': 'RiskFlow Calibre', 'symphony': 'Symphony', 'orcaa': 'Orcaa.ai', 'credit studio': 'Credit Studio & Onboard Studio', 'onboard studio': 'Credit Studio & Onboard Studio' };
       var LIST_WORDS = ['which', 'any', 'show', 'list', 'how many', 'do i have', 'tickets'];
 
       document.body.classList.add('has-helpbot');
@@ -2871,7 +2888,7 @@ document.addEventListener('DOMContentLoaded', function () {
       }
 
       function newTicket() {
-        reply('Report it with the new ticket form. Pick the closest category (Network, Application, Hardware, or Access &amp; Identity) and a priority, and describe what happened. Attach screenshots if you have them.',
+        reply('Report it with the new ticket form. Pick the product (RiskFlow Calibre, Symphony, Orcaa.ai, or Credit Studio &amp; Onboard Studio) and a priority, and describe what happened. Attach screenshots if you have them.',
           [{ label: 'Create a ticket', href: 'ticket.html' }]);
       }
 
@@ -2938,8 +2955,10 @@ document.addEventListener('DOMContentLoaded', function () {
       }
 
       function productHelp(p, q) {
-        var report = { label: 'Report a ' + p.name + ' problem', href: 'ticket.html?category=Application&service=' + encodeURIComponent(p.name) };
-        var related = all.filter(function (t) { return isOpen(t) && t.service && has(t.service.toLowerCase(), p.words); });
+        var report = { label: 'Report a ' + p.name + ' problem', href: 'ticket.html?category=' + encodeURIComponent(p.category) };
+        var related = all.filter(function (t) {
+          return isOpen(t) && (t.category === p.category || (t.service && has(t.service.toLowerCase(), p.words)));
+        });
         var relatedHtml = related.length
           ? '<br><br>Your open ' + p.name + ' tickets:<br>' + related.slice(0, 3).map(ticketLine).join('<br>')
           : '';
@@ -2965,7 +2984,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
       function urgentHelp(q) {
         var p = productFor(q);
-        var href = 'ticket.html?priority=Critical' + (p ? '&category=Application&service=' + encodeURIComponent(p.name) : '');
+        var href = 'ticket.html?priority=Critical' + (p ? '&category=' + encodeURIComponent(p.category) : '');
         var open = all.filter(function (t) { return t.status !== 'Closed'; });
         reply("If a service is down or it's stopping many people from working, raise a <strong>Critical</strong> ticket" + slaText('Critical') + '.' +
           (open.length ? "<br><br>If it's about a ticket you already have, message the agent there instead so it isn't split in two." : ''),

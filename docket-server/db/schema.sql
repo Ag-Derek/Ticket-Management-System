@@ -98,7 +98,7 @@ CREATE TABLE IF NOT EXISTS tickets (
   user_id             TEXT NOT NULL REFERENCES users(id),
   subject             TEXT NOT NULL,
   description         TEXT NOT NULL,
-  category            TEXT NOT NULL,         -- Network | Application | Hardware | Access & Identity
+  category            TEXT NOT NULL,         -- Product: RiskFlow Calibre | Symphony | Orcaa.ai | Credit Studio & Onboard Studio
   priority            TEXT NOT NULL,         -- Low | Medium | High | Critical
   status              TEXT NOT NULL DEFAULT 'Created',
                       -- Created | Assigned | In Progress | Waiting | Escalated
