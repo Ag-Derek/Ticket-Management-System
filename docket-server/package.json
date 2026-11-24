@@ -16,17 +16,17 @@
     "migrate-to-postgres": "node db/migrate-to-postgres.js"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.116.0",
+    "@supabase/supabase-js": "^2.119.2",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
-    "docx": "^9.1.1",
+    "docx": "^9.16.0",
     "dotenv": "^17.4.2",
     "express": "^4.21.0",
     "express-rate-limit": "^7.5.1",
-    "pdfkit": "^0.15.2",
-    "pg": "^8.23.0"
+    "pdfkit": "^0.21.0",
+    "pg": "^8.23.1"
   },
   "devDependencies": {
-    "better-sqlite3": "^13.0.3"
+    "better-sqlite3": "^13.2.0"
   }
 }
