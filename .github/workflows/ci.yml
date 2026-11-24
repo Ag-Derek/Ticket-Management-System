@@ -17,7 +17,7 @@ jobs:
       DATABASE_URL: postgres://test:test@localhost:5432/test
       DATABASE_SSL: 'false'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Same Node version as Render, which reads engines.node in package.json.
       - uses: actions/setup-node@v4
@@ -37,7 +37,7 @@ jobs:
   spelling:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # cspell 10 needs Node 22.18 or newer.
       - uses: actions/setup-node@v4
