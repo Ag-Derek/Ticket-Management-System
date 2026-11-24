@@ -1,0 +1,61 @@
+name: Dependencies
+
+# Comments on a PR when docket-server requires a package that isn't in
+# package.json, or when package.json and package-lock.json disagree.
+# On Dependabot PRs it also reminds the reviewer to read the changelog for
+# majors, and to test Supabase and Resend majors by hand (issue #73).
+#
+# Dependabot PRs get a read-only token unless the workflow asks for more,
+# so the permissions below are needed for the comment to post.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: docket-server/package.json
+
+      - name: Check dependencies
+        id: check
+        continue-on-error: true
+        run: node .github/scripts/dependency-check.js dependency-report.json
+
+      - name: Read Dependabot metadata
+        id: dependabot
+        if: github.event.pull_request.user.login == 'dependabot[bot]'
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Comment on the pull request
+        # Forked PRs get a read-only token, so skip rather than fail there.
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@v7
+        env:
+          DEPENDENCY_NAMES: ${{ steps.dependabot.outputs.dependency-names }}
+          UPDATE_TYPE: ${{ steps.dependabot.outputs.update-type }}
+        with:
+          script: |
+            const { commentOnPullRequest } = require('./.github/scripts/dependency-check.js');
+            const names = (process.env.DEPENDENCY_NAMES || '').split(',').map((n) => n.trim()).filter(Boolean);
+            await commentOnPullRequest({
+              github, context, core,
+              reportPath: 'dependency-report.json',
+              dependabot: { names, updateType: process.env.UPDATE_TYPE },
+            });
+
+      - name: Fail if dependencies are missing
+        if: steps.check.outcome == 'failure'
+        run: |
+          echo "Dependency problems found. See the PR comment or the 'Check dependencies' step above."
+          exit 1

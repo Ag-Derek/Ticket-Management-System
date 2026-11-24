@@ -1,0 +1,46 @@
+# Dependabot: keeps npm packages and GitHub Actions current (issue #73).
+#
+# - Checks every Monday.
+# - Minor and patch updates are grouped into one PR per ecosystem per week.
+# - Each major update gets its own PR. Read its changelog before merging.
+# - Supabase and Resend majors are tested by hand, never merged on CI alone.
+#   The "Dependencies" workflow comments on those PRs as a reminder.
+# - Security updates open a PR as soon as an alert is raised, whatever the
+#   schedule. They need "Dependabot security updates" turned on in
+#   Settings -> Code security.
+# - At most 5 version-update PRs open at once (4 npm + 1 Actions).
+# - Dependabot never merges. A maintainer merges once CI passes.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /docket-server
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    open-pull-requests-limit: 4
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      npm-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    open-pull-requests-limit: 1
+    commit-message:
+      prefix: ci
+    groups:
+      actions-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
