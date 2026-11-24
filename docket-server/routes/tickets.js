@@ -11,7 +11,7 @@ const { slaFor, slaSummary, SLA_PAUSED_STATUSES } = require('../utils/sla');
 
 const router = express.Router();
 
-// Tickets are categorised by product. The column is still called "category"
+// Tickets are categorized by product. The column is still called "category"
 // so existing rows and queries keep working; tickets filed before the switch
 // keep their old category (Network, Application, ...) as-is.
 const VALID_CATEGORIES = ['RiskFlow Calibre', 'Symphony', 'Orcaa.ai', 'Credit Studio & Onboard Studio'];
