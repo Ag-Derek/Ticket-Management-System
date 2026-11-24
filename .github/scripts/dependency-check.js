@@ -102,21 +102,40 @@ function findLockfileDrift(pkg, lock) {
   return drift;
 }
 
-function analyze(root = PACKAGE_DIR) {
-  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-  const lockPath = path.join(root, 'package-lock.json');
-  const report = { undeclared: findUndeclared(root, pkg), drift: [], noLockfile: false };
-  if (fs.existsSync(lockPath)) {
-    report.drift = findLockfileDrift(pkg, JSON.parse(fs.readFileSync(lockPath, 'utf8')));
-  } else {
-    report.noLockfile = true;
+// Returns the parsed file, or records it in report.invalidJson and returns
+// null. A bad merge (both sides of a conflict kept) is the usual cause.
+function readJson(file, report) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (err) {
+    report.invalidJson.push({ file: file.split(path.sep).join('/'), error: err.message });
+    return null;
   }
-  report.ok = report.undeclared.length === 0 && report.drift.length === 0 && !report.noLockfile;
+}
+
+function analyze(root = PACKAGE_DIR) {
+  const report = { undeclared: [], drift: [], noLockfile: false, invalidJson: [] };
+  const pkg = readJson(path.join(root, 'package.json'), report);
+  const lockPath = path.join(root, 'package-lock.json');
+  if (pkg) report.undeclared = findUndeclared(root, pkg);
+  if (!fs.existsSync(lockPath)) {
+    report.noLockfile = true;
+  } else {
+    const lock = readJson(lockPath, report);
+    if (pkg && lock) report.drift = findLockfileDrift(pkg, lock);
+  }
+  report.ok = report.undeclared.length === 0 && report.drift.length === 0
+    && !report.noLockfile && report.invalidJson.length === 0;
   return report;
 }
 
 function problemsMarkdown(report, fileUrl) {
   const out = [];
+  if (report.invalidJson.length) {
+    out.push('### Not valid JSON', '', '`npm ci` can\'t read these files. This usually means a merge conflict was resolved by keeping both sides.', '');
+    for (const { file, error } of report.invalidJson) out.push(`- \`${file}\`: ${error}`);
+    out.push('', 'To fix, take `package.json` from one side of the merge, then run `npm install` in `docket-server/` to rebuild `package-lock.json`. On a Dependabot PR, comment `@dependabot recreate` instead.', '');
+  }
   if (report.undeclared.length) {
     out.push('### Missing from package.json', '');
     out.push('The code requires these packages, but `docket-server/package.json` doesn\'t list them. They\'ll be missing when Render or CI installs from the lockfile.', '');
@@ -155,6 +174,10 @@ function dependabotMarkdown(meta) {
 
 // Called from actions/github-script.
 async function commentOnPullRequest({ github, context, core, reportPath, dependabot }) {
+  if (!fs.existsSync(reportPath)) {
+    core.warning(`${reportPath} wasn't written, so the check crashed. See the 'Check dependencies' step.`);
+    return;
+  }
   const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
   const pr = context.payload.pull_request;
   if (!pr) return;
