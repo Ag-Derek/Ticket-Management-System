@@ -7,7 +7,8 @@ const { requireTicketAccess } = require('../middleware/authorize');
 const { asyncHandler } = require('../utils/async-handler');
 const { recordAuditLog, resolveActorName } = require('../utils/audit');
 const { notifyTicketCreated, notifyTicketResolved, notifyTicketAssigned } = require('../utils/ticket-notifications');
-const { slaFor, slaSummary, SLA_PAUSED_STATUSES } = require('../utils/sla');
+const { slaFor, slaSummary, SLA_PAUSED_STATUSES, RESOLUTION_STATE_SQL } = require('../utils/sla');
+const { buildTicketFilters, scopeFor } = require('../utils/ticket-filters');
 
 const router = express.Router();
 
@@ -201,19 +202,19 @@ router.post('/', requireAuth(['user', 'admin']), asyncHandler(async (req, res) =
   res.status(201).json(await ticketWithComments(id, req.actor));
 }));
 
-// GET /api/tickets?user_id=...&assigned_agent_id=...&status=...
-// user_id/assigned_agent_id in the query string are only advisory now —
-// for 'user' and 'agent' actors the filter is forced to their own id
-// server-side, regardless of what the query string says, so no actor can
-// list another customer's or another agent's tickets by editing the URL.
-// Admins may filter by whatever they like, including neither (all tickets).
+// GET /api/tickets?status=&category=&priority=&search=&created_on=&user_id=&assigned_agent_id=
+// The actor's scope comes first and can't be widened from the query string:
+// a customer only ever sees their own tickets and an agent only the ones
+// assigned to them, whatever user_id/assigned_agent_id say. Admins see all
+// tickets and may filter by requester or assignee (assigned_agent_id=
+// unassigned for tickets nobody owns). utils/ticket-filters.js has the rest.
 //
 // Pagination is opt-in: ?limit=N (max MAX_PAGE_SIZE) &offset=M returns one
 // page, newest first, with the total number of matching tickets in the
-// X-Total-Count header. Without ?limit the whole list comes back, as the
-// dashboards still expect today. The body is a plain array either way.
+// X-Total-Count header. The agent and admin dashboards always page; the
+// customer portal loads its own short list whole. The body is a plain array
+// either way.
 router.get('/', requireAuth(), asyncHandler(async (req, res) => {
-  const { status } = req.query;
   const limit = req.query.limit !== undefined ? Number(req.query.limit) : null;
   const offset = req.query.offset !== undefined ? Number(req.query.offset) : 0;
   if (limit !== null && (!Number.isInteger(limit) || limit < 1 || limit > MAX_PAGE_SIZE)) {
@@ -223,18 +224,9 @@ router.get('/', requireAuth(), asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'offset must be a non-negative integer' });
   }
 
-  let where = 'WHERE 1=1';
-  const params = [];
-
-  if (req.actor.role === 'user') {
-    params.push(req.actor.id); where += ` AND t.user_id = $${params.length}`;
-  } else if (req.actor.role === 'agent') {
-    params.push(req.actor.id); where += ` AND t.assigned_agent_id = $${params.length}`;
-  } else if (req.actor.role === 'admin') {
-    if (req.query.user_id) { params.push(req.query.user_id); where += ` AND t.user_id = $${params.length}`; }
-    if (req.query.assigned_agent_id) { params.push(req.query.assigned_agent_id); where += ` AND t.assigned_agent_id = $${params.length}`; }
-  }
-  if (status) { params.push(status); where += ` AND t.status = $${params.length}`; }
+  const filters = buildTicketFilters(req.actor, req.query);
+  if (filters.error) return res.status(400).json({ error: filters.error });
+  const { where, params } = filters;
 
   // t.id breaks created_at ties so pages never overlap or skip a row.
   let sql = `${TICKET_SELECT} ${where} ORDER BY t.created_at DESC, t.id DESC`;
@@ -248,7 +240,7 @@ router.get('/', requireAuth(), asyncHandler(async (req, res) => {
     if (limit !== null) {
       const [result, countResult] = await Promise.all([
         db.query(sql, pageParams),
-        db.query(`SELECT COUNT(*)::int AS n FROM tickets t ${where}`, params)
+        db.query(`SELECT COUNT(*)::int AS n FROM tickets t LEFT JOIN users u ON u.id = t.user_id ${where}`, params)
       ]);
       res.setHeader('X-Total-Count', String(countResult.rows[0].n));
       return res.json(result.rows.map((row) => forActor(req.actor, row)));
@@ -259,6 +251,45 @@ router.get('/', requireAuth(), asyncHandler(async (req, res) => {
     console.error('GET /api/tickets error:', err);
     res.status(500).json({ error: 'failed to load tickets' });
   }
+}));
+
+// GET /api/tickets/stats — the counts behind the agent and admin dashboards'
+// stat cards, over every ticket the actor can see: not just the page they
+// have loaded, and ignoring the list's search and filters. An SLA breach
+// counts open tickets only, by the same rule as the Reports tab.
+// assigned_by_agent ({ agent id: tickets assigned, any status }) is
+// admin-only, for the agent directory. Must stay above /:id.
+router.get('/stats', requireAuth(['agent', 'admin']), asyncHandler(async (req, res) => {
+  const { where, params } = scopeFor(req.actor);
+  params.push(req.actor.id);
+  const actorParam = `$${params.length}`;
+  const open = "t.status NOT IN ('Resolved', 'Closed')";
+
+  const [counts, byAgent] = await Promise.all([
+    db.query(
+      `SELECT COUNT(*)::int AS total,
+              COUNT(*) FILTER (WHERE ${open})::int AS open,
+              COUNT(*) FILTER (WHERE ${open} AND t.priority = 'Critical')::int AS critical_open,
+              COUNT(*) FILTER (WHERE ${open} AND t.assigned_agent_id IS NULL)::int AS unassigned_open,
+              COUNT(*) FILTER (WHERE NOT (${open}))::int AS resolved,
+              COUNT(*) FILTER (WHERE ${open} AND (${RESOLUTION_STATE_SQL}) = 'breached')::int AS sla_breached,
+              COUNT(*) FILTER (WHERE t.assigned_agent_id = ${actorParam})::int AS mine
+       FROM tickets t ${where}`,
+      params
+    ),
+    req.actor.role === 'admin'
+      ? db.query(
+        `SELECT assigned_agent_id, COUNT(*)::int AS n FROM tickets
+         WHERE assigned_agent_id IS NOT NULL GROUP BY assigned_agent_id`
+      )
+      : null
+  ]);
+
+  const stats = counts.rows[0];
+  if (byAgent) {
+    stats.assigned_by_agent = Object.fromEntries(byAgent.rows.map((r) => [r.assigned_agent_id, r.n]));
+  }
+  res.json(stats);
 }));
 
 // GET /api/tickets/sla-targets — the per-priority targets from utils/sla.js,

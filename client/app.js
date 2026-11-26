@@ -1468,14 +1468,19 @@ document.addEventListener('DOMContentLoaded', function () {
     if (box) box.remove();
   }
 
+  // The agent and admin queues load this many tickets at a time.
+  var QUEUE_PAGE_SIZE = 50;
+
   // GET /api/tickets, optionally filtered — e.g. { user_id: 'USR-000001' } for
-  // the customer portal, or no filter at all for the agent/admin queues.
+  // the customer portal, or { limit, offset, search, status, ... } for one
+  // page of the agent/admin queues. onDone gets the rows and the total number
+  // of matching tickets (X-Total-Count when paging, else the row count).
   function fetchTickets(query, onDone, onError) {
     var qs = '';
     if (query) {
       var parts = [];
       Object.keys(query).forEach(function (k) {
-        if (query[k]) parts.push(encodeURIComponent(k) + '=' + encodeURIComponent(query[k]));
+        if (query[k] || query[k] === 0) parts.push(encodeURIComponent(k) + '=' + encodeURIComponent(query[k]));
       });
       if (parts.length) qs = '?' + parts.join('&');
     }
@@ -1486,21 +1491,92 @@ document.addEventListener('DOMContentLoaded', function () {
           err.status = response.status;
           throw err;
         }
-        return response.json();
+        var totalHeader = response.headers.get('X-Total-Count');
+        return response.json().then(function (rows) {
+          return { rows: rows, total: totalHeader !== null ? Number(totalHeader) : rows.length };
+        });
       })
-      .then(function (rows) { onDone(rows.map(normalizeTicket)); })
+      .then(function (page) { onDone(page.rows.map(normalizeTicket), page.total); })
       .catch(function (err) {
         console.error('Ticket load error:', err);
         if (onError) onError(err);
       });
   }
 
+  // GET /api/tickets/:id — the queues use it for a selected ticket that isn't
+  // on the page they have loaded. onError gets the HTTP status, so a 404 (or
+  // 403, once it's no longer the agent's) can drop the selection.
+  function fetchTicketById(id, onDone, onError) {
+    fetch(API_BASE + '/api/tickets/' + encodeURIComponent(id), { headers: authHeaders() })
+      .then(function (response) {
+        if (!response.ok) {
+          var err = new Error('Unable to load the ticket.');
+          err.status = response.status;
+          throw err;
+        }
+        return response.json();
+      })
+      .then(function (row) { onDone(normalizeTicket(row)); })
+      .catch(function (err) {
+        console.error('Ticket load error:', err);
+        if (onError) onError(err);
+      });
+  }
+
+  // GET /api/tickets/stats — the queue stat cards, counted over every ticket
+  // the signed-in agent/admin can see rather than the loaded page.
+  function fetchTicketStats(onDone) {
+    fetch(API_BASE + '/api/tickets/stats', { headers: authHeaders() })
+      .then(function (response) {
+        if (!response.ok) throw new Error('Unable to load ticket stats (' + response.status + ').');
+        return response.json();
+      })
+      .then(onDone)
+      .catch(function (err) { console.error('Ticket stats error:', err); });
+  }
+
+  // Calls fn once input has paused for `ms` — for the queue search boxes,
+  // so each keystroke doesn't become a request.
+  function debounce(fn, ms) {
+    var timer = null;
+    return function () {
+      clearTimeout(timer);
+      timer = setTimeout(fn, ms);
+    };
+  }
+
+  // Fills a queue's page controls ("1–50 of 312", Previous/Next) and wires
+  // the buttons on first use. onPage(offset) loads another page.
+  function renderQueuePager(el, offset, count, total, onPage) {
+    if (!el) return;
+    if (!el.dataset.wired) {
+      el.innerHTML =
+        '<button class="btn-ghost btn-small queue-pager-prev" type="button">← Previous</button>' +
+        '<span class="queue-pager-range" aria-live="polite"></span>' +
+        '<button class="btn-ghost btn-small queue-pager-next" type="button">Next →</button>';
+      el.dataset.wired = '1';
+      el.querySelector('.queue-pager-prev').addEventListener('click', function () {
+        onPage(Math.max(0, Number(el.dataset.offset) - QUEUE_PAGE_SIZE));
+      });
+      el.querySelector('.queue-pager-next').addEventListener('click', function () {
+        onPage(Number(el.dataset.offset) + QUEUE_PAGE_SIZE);
+      });
+    }
+    el.dataset.offset = String(offset);
+    el.style.display = total > QUEUE_PAGE_SIZE ? '' : 'none';
+    el.querySelector('.queue-pager-range').textContent = count
+      ? (offset + 1) + '–' + (offset + count) + ' of ' + total
+      : '0 of ' + total;
+    el.querySelector('.queue-pager-prev').disabled = offset === 0;
+    el.querySelector('.queue-pager-next').disabled = offset + count >= total;
+  }
+
   // Retries a failed fetchTickets() with backoff before finally calling
   // onError — used for the agent/admin queues' initial load, where a Render
   // free-tier cold start can make the very first request time out even
   // though the API is otherwise fine. Without this, that timeout renders
-  // exactly like a genuinely empty queue (see bootstrapAgentQueue/
-  // bootstrapAdminConsole's separate `failed` state, which this feeds).
+  // exactly like a genuinely empty queue (see showAgentQueueState/
+  // showAdminQueueState and their separate `failed` state, which this feeds).
   function fetchTicketsWithRetry(query, onDone, onError, attempt) {
     attempt = attempt || 0;
     var delays = [2000, 5000]; // wait 2s, then 5s, before giving up
@@ -3172,7 +3248,12 @@ document.addEventListener('DOMContentLoaded', function () {
     // localStorage read (and the backfill defaults it needed for records
     // predating the status/assignment fields) is gone, since every row now
     // comes out of the database with those columns already populated.
+    // `tickets` is the loaded page only (QUEUE_PAGE_SIZE rows); queueTotal is
+    // how many tickets match the current search and filters in all.
     var tickets = [];
+    var queueOffset = 0;
+    var queueTotal = 0;
+    var agentStats = null; // GET /api/tickets/stats, for the stat cards
 
     var currentFilter = 'All';
     var searchQuery = '';
@@ -3180,6 +3261,44 @@ document.addEventListener('DOMContentLoaded', function () {
     var categoryFilter = '';
     var dateFilter = '';
     var selectedId = null; // set once the fetch below resolves
+    // The selected ticket's latest copy. Kept apart from `tickets` because the
+    // selection stays put when a page or filter change leaves it off the list.
+    var selectedTicket = null;
+
+    function currentTicket() {
+      return selectedTicket && selectedTicket.id === selectedId ? selectedTicket : null;
+    }
+
+    function selectTicket(t) {
+      selectedId = t ? t.id : null;
+      selectedTicket = t || null;
+    }
+
+    // Takes in a ticket this tab just changed, wherever it's shown.
+    function storeAgentTicket(updated) {
+      replaceTicketIn(tickets, updated);
+      if (selectedTicket && selectedTicket.id === updated.id) selectedTicket = updated;
+      agentKnownSignature[updated.id] = ticketSignature(updated);
+    }
+
+    // The page the list shows, as GET /api/tickets query parameters. The
+    // server only gives an agent their own tickets, so "Assigned to me" has
+    // nothing to add; the other chips filter by priority.
+    function agentQueueQuery() {
+      return {
+        limit: QUEUE_PAGE_SIZE,
+        offset: queueOffset,
+        search: searchQuery.trim(),
+        status: statusFilter,
+        category: categoryFilter,
+        created_on: dateFilter,
+        priority: currentFilter !== 'All' && currentFilter !== 'Mine' ? currentFilter : ''
+      };
+    }
+
+    function agentFiltersActive() {
+      return !!(searchQuery.trim() || statusFilter || categoryFilter || dateFilter || currentFilter !== 'All');
+    }
 
     function statusClass(status) {
       if (status === 'Resolved') return 'status-resolved';
@@ -3190,10 +3309,6 @@ document.addEventListener('DOMContentLoaded', function () {
       if (status === 'Escalated') return 'status-escalated';
       return '';
     }
-
-    // Closed tickets are done, same as Resolved, for queue-health purposes.
-    // Reopened tickets are back in the open pile until an agent resolves them again.
-    function isOpenStatus(status) { return status !== 'Resolved' && status !== 'Closed'; }
 
     // ---- Ticket status state machine ----
     // Each key is a status an agent can act on; the value lists every status
@@ -3235,10 +3350,9 @@ document.addEventListener('DOMContentLoaded', function () {
     // other error, which the caller reports as before.
     function showLatestAgentTicket(err) {
       if (!err || !err.latest) return false;
-      replaceTicketIn(tickets, err.latest);
-      agentKnownSignature[err.latest.id] = ticketSignature(err.latest);
+      storeAgentTicket(err.latest);
       closePanels();
-      renderStats(); renderDetail(); renderList();
+      renderDetail(); renderList(); refreshAgentQueue();
       alert(err.message);
       return true;
     }
@@ -3247,9 +3361,8 @@ document.addEventListener('DOMContentLoaded', function () {
       if (!isMine(t)) return;
       if (!canTransition(t.status, toStatus)) return;
       changeTicketStatus(t, { status: toStatus }, function (updated) {
-        replaceTicketIn(tickets, updated);
-        agentKnownSignature[updated.id] = ticketSignature(updated);
-        renderStats(); renderDetail(); renderList();
+        storeAgentTicket(updated);
+        renderDetail(); renderList(); refreshAgentQueue();
       }, function (err) {
         if (showLatestAgentTicket(err)) return;
         alert(err.message || 'Unable to update the ticket status.');
@@ -3408,14 +3521,14 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     document.getElementById('reassignBtn').addEventListener('click', function () {
-      var t = tickets.filter(function (x) { return x.id === selectedId; })[0];
+      var t = currentTicket();
       if (!t) return;
       if (reassignPanel.style.display === 'block') { closePanels(); return; }
       openReassignPanel(t);
     });
     document.getElementById('reassignCancelBtn').addEventListener('click', closePanels);
     document.getElementById('reassignConfirmBtn').addEventListener('click', function () {
-      var t = tickets.filter(function (x) { return x.id === selectedId; })[0];
+      var t = currentTicket();
       if (!t || !canReassign(t)) { closePanels(); return; }
       var toId = reassignSelect.value; // '' means the Unassigned option was picked
       if (toId === (t.assignedAgentId || '')) { closePanels(); return; }
@@ -3432,14 +3545,13 @@ document.addEventListener('DOMContentLoaded', function () {
       confirmBtn.disabled = true;
       assignTicket(t, toId, function (updated) {
         confirmBtn.disabled = false;
-        replaceTicketIn(tickets, updated);
-        agentKnownSignature[updated.id] = ticketSignature(updated);
+        storeAgentTicket(updated);
         var noteText = toName
           ? (wasUnassigned ? 'Assigned to ' + toName : 'Reassigned from ' + from + ' to ' + toName)
           : 'Unassigned (was ' + from + ')';
         addInternalNote(updated.id, noteText + (note ? ' — ' + note : '.'));
         closePanels();
-        renderStats(); renderDetail(); renderList();
+        renderDetail(); renderList(); refreshAgentQueue();
       }, function (err) {
         confirmBtn.disabled = false;
         if (showLatestAgentTicket(err)) return;
@@ -3449,7 +3561,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     document.getElementById('escalateCancelBtn').addEventListener('click', closePanels);
     document.getElementById('escalateConfirmBtn').addEventListener('click', function () {
-      var t = tickets.filter(function (x) { return x.id === selectedId; })[0];
+      var t = currentTicket();
       if (!t || !isMine(t)) { closePanels(); return; }
       var toId = escalateSelect.value;
       var reason = escalateReason.value.trim();
@@ -3463,11 +3575,10 @@ document.addEventListener('DOMContentLoaded', function () {
       escalateConfirmBtnEl.disabled = true;
       changeTicketStatus(t, { status: 'Escalated', escalated_to: toName, escalation_reason: reason, suggested_agent_id: toId }, function (updated) {
         escalateConfirmBtnEl.disabled = false;
-        replaceTicketIn(tickets, updated);
-        agentKnownSignature[updated.id] = ticketSignature(updated);
+        storeAgentTicket(updated);
         addInternalNote(updated.id, 'Escalated to ' + toName + ' — ' + reason);
         closePanels();
-        renderStats(); renderDetail(); renderList();
+        renderDetail(); renderList(); refreshAgentQueue();
       }, function (err) {
         escalateConfirmBtnEl.disabled = false;
         if (showLatestAgentTicket(err)) return;
@@ -3482,7 +3593,7 @@ document.addEventListener('DOMContentLoaded', function () {
     if (resolveCancelBtn) resolveCancelBtn.addEventListener('click', closePanels);
     if (resolveConfirmBtn) {
       resolveConfirmBtn.addEventListener('click', function () {
-        var t = tickets.filter(function (x) { return x.id === selectedId; })[0];
+        var t = currentTicket();
         if (!t || !isMine(t)) { closePanels(); return; }
         var summary = resolveSummaryInput.value.trim();
         if (!summary) {
@@ -3497,11 +3608,10 @@ document.addEventListener('DOMContentLoaded', function () {
         resolveConfirmBtn.disabled = true;
         changeTicketStatus(t, { status: 'Resolved', resolution_summary: summary }, function (updated) {
           resolveConfirmBtn.disabled = false;
-          replaceTicketIn(tickets, updated);
-          agentKnownSignature[updated.id] = ticketSignature(updated);
+          storeAgentTicket(updated);
           addInternalNote(updated.id, 'Marked resolved — ' + summary);
           closePanels();
-          renderStats(); renderDetail(); renderList();
+          renderDetail(); renderList(); refreshAgentQueue();
         }, function (err) {
           resolveConfirmBtn.disabled = false;
           if (showLatestAgentTicket(err)) return;
@@ -3510,27 +3620,21 @@ document.addEventListener('DOMContentLoaded', function () {
       });
     }
 
+    // Counted by the server over every ticket this agent can see (GET
+    // /api/tickets/stats), not just the loaded page; refreshed with each poll.
     function renderStats() {
-      var open = tickets.filter(function (t) { return isOpenStatus(t.status); }).length;
-      var critical = tickets.filter(function (t) { return t.priority === 'Critical' && isOpenStatus(t.status); }).length;
-      var unassigned = tickets.filter(function (t) { return !t.assignedAgent && isOpenStatus(t.status); }).length;
-      var resolved = tickets.filter(function (t) { return t.status === 'Resolved' || t.status === 'Closed'; }).length;
-      var mine = tickets.filter(isMine).length;
-
-      var now = Date.now();
-      var slaBreached = tickets.filter(function (t) { var a = slaAlert(t, now); return a && a.level === 'breached'; }).length;
-
-      document.getElementById('statOpen').textContent = open;
-      document.getElementById('statCritical').textContent = critical;
-      document.getElementById('statSlaBreached').textContent = slaBreached;
-      document.getElementById('statUnassigned').textContent = unassigned;
-      document.getElementById('statResolved').textContent = resolved;
-      document.getElementById('agentMineCount').textContent = mine;
+      if (!agentStats) return;
+      document.getElementById('statOpen').textContent = agentStats.open;
+      document.getElementById('statCritical').textContent = agentStats.critical_open;
+      document.getElementById('statSlaBreached').textContent = agentStats.sla_breached;
+      document.getElementById('statUnassigned').textContent = agentStats.unassigned_open;
+      document.getElementById('statResolved').textContent = agentStats.resolved;
+      document.getElementById('agentMineCount').textContent = agentStats.mine;
     }
 
     function renderDetail() {
       var dash = document.getElementById('agentDash');
-      var t = tickets.filter(function (x) { return x.id === selectedId; })[0];
+      var t = currentTicket();
 
       if (!t) {
         dash.style.display = 'none';
@@ -3648,34 +3752,24 @@ document.addEventListener('DOMContentLoaded', function () {
       }
     }
 
+    // `tickets` is one page, already searched and filtered by the server
+    // (see agentQueueQuery), so this only draws it.
     function renderList() {
       var listEl = document.getElementById('queueList');
-      var q = searchQuery.trim().toLowerCase();
-      var filtered = tickets.filter(function (t) {
-        if (currentFilter === 'Mine' && !isMine(t)) return false;
-        if (currentFilter !== 'All' && currentFilter !== 'Mine' && t.priority !== currentFilter) return false;
-        if (statusFilter && t.status !== statusFilter) return false;
-        if (categoryFilter && t.category !== categoryFilter) return false;
-        if (dateFilter) {
-          var createdDate = t.createdAt ? t.createdAt.slice(0, 10) : '';
-          if (createdDate !== dateFilter) return false;
-        }
-        if (q) {
-          var haystack = (t.id + ' ' + t.subject + ' ' + (t.email || '')).toLowerCase();
-          if (haystack.indexOf(q) === -1) return false;
-        }
-        return true;
+      renderQueuePager(document.getElementById('queuePager'), queueOffset, tickets.length, queueTotal, function (offset) {
+        queueOffset = offset;
+        refreshAgentQueue();
       });
 
       listEl.innerHTML = '';
 
-      if (!filtered.length) {
+      if (!tickets.length) {
         listEl.innerHTML = '<p class="queue-no-results">No tickets match your search or filters.</p>';
         return;
       }
 
       var now = Date.now();
-      filtered.forEach(function (t) {
+      tickets.forEach(function (t) {
         var row = document.createElement('div');
         var alertInfo = slaAlert(t, now);
         row.className = 'history-row ' + statusClass(t.status) + (alertInfo && alertInfo.level === 'breached' ? ' sla-breached-row' : '');
@@ -3696,9 +3790,9 @@ document.addEventListener('DOMContentLoaded', function () {
             '<span class="history-chip">' + (t.assignedAgent ? escapeHtml(t.assignedAgent) : '<span class="history-unassigned">Unassigned</span>') + '</span>' +
             '<span class="history-status">' + escapeHtml(t.status) + '</span>' +
           '</div>';
-        row.addEventListener('click', function () { selectedId = t.id; renderDetail(); renderList(); });
+        row.addEventListener('click', function () { selectTicket(t); renderDetail(); renderList(); });
         row.addEventListener('keydown', function (e) {
-          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectedId = t.id; renderDetail(); renderList(); }
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectTicket(t); renderDetail(); renderList(); }
         });
         listEl.appendChild(row);
       });
@@ -3706,16 +3800,15 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     document.getElementById('assignToMeBtn').addEventListener('click', function () {
-      var t = tickets.filter(function (x) { return x.id === selectedId; })[0];
+      var t = currentTicket();
       if (!t) return;
       var btn = document.getElementById('assignToMeBtn');
       btn.disabled = true; // re-enabled by renderDetail on success
       assignTicket(t, agent.id, function (updated) {
-        replaceTicketIn(tickets, updated);
-        // Keep the poll's signature in step so it doesn't re-render on top of
-        // a change this tab just made.
-        agentKnownSignature[updated.id] = ticketSignature(updated);
-        renderStats(); renderDetail(); renderList();
+        // Also keeps the poll's signature in step, so it doesn't re-render on
+        // top of a change this tab just made.
+        storeAgentTicket(updated);
+        renderDetail(); renderList(); refreshAgentQueue();
       }, function (err) {
         btn.disabled = false;
         if (showLatestAgentTicket(err)) return;
@@ -3728,39 +3821,48 @@ document.addEventListener('DOMContentLoaded', function () {
         document.querySelectorAll('.filter-chip').forEach(function (c) { c.classList.remove('active'); });
         chip.classList.add('active');
         currentFilter = chip.dataset.filter;
-        renderList();
+        reloadAgentQueueFromStart();
       });
     });
 
-    // FR-14: search by ticket number/requester/subject, plus status/category/date filters
+    // FR-14: search by ticket number/requester/subject, plus status/category/date
+    // filters. All of them run on the server, across every ticket, and send
+    // the list back to its first page; the selected ticket stays selected.
     var queueSearchInput = document.getElementById('queueSearchInput');
     var queueStatusFilter = document.getElementById('queueStatusFilter');
     var queueCategoryFilter = document.getElementById('queueCategoryFilter');
     var queueDateFilter = document.getElementById('queueDateFilter');
     var queueClearFilters = document.getElementById('queueClearFilters');
 
+    function reloadAgentQueueFromStart() {
+      queueOffset = 0;
+      refreshAgentQueue();
+    }
+
     if (queueSearchInput) {
-      queueSearchInput.addEventListener('input', function () {
+      var searchAgentQueue = debounce(function () {
+        if (searchQuery === queueSearchInput.value) return;
         searchQuery = queueSearchInput.value;
-        renderList();
-      });
+        reloadAgentQueueFromStart();
+      }, 300);
+      queueSearchInput.addEventListener('input', searchAgentQueue);
     }
     if (queueStatusFilter) {
       queueStatusFilter.addEventListener('change', function () {
         statusFilter = queueStatusFilter.value;
-        renderList();
+        reloadAgentQueueFromStart();
       });
     }
     if (queueCategoryFilter) {
       queueCategoryFilter.addEventListener('change', function () {
         categoryFilter = queueCategoryFilter.value;
-        renderList();
+        reloadAgentQueueFromStart();
       });
     }
     if (queueDateFilter) {
       queueDateFilter.addEventListener('change', function () {
         dateFilter = queueDateFilter.value;
-        renderList();
+        reloadAgentQueueFromStart();
       });
     }
     if (queueClearFilters) {
@@ -3770,90 +3872,123 @@ document.addEventListener('DOMContentLoaded', function () {
         if (queueStatusFilter) queueStatusFilter.value = '';
         if (queueCategoryFilter) queueCategoryFilter.value = '';
         if (queueDateFilter) queueDateFilter.value = '';
-        renderList();
+        reloadAgentQueueFromStart();
       });
     }
 
-    // Renders whatever `tickets` currently holds. Called once the initial
-    // fetch resolves. Pass `failed: true` when the fetch itself errored out
-    // (after retries) — kept visually and semantically separate from a
-    // genuinely empty queue, which used to render identically and silently.
-    function bootstrapAgentQueue(failed) {
+    // Shows the load-error or empty state, or else lets the queue show. Pass
+    // `failed: true` when the first load errored out (after retries) — kept
+    // visually and semantically separate from a genuinely empty queue, which
+    // used to render identically and silently. Empty means the agent has no
+    // tickets at all; a search or filter that matches nothing only empties
+    // the list. Returns whether the queue itself should be drawn.
+    function showAgentQueueState(failed) {
       var queueEmptyEl = document.getElementById('queueEmpty');
       var queueErrorEl = document.getElementById('queueLoadError');
-      if (failed) {
-        if (queueErrorEl) queueErrorEl.style.display = 'block';
-        if (queueEmptyEl) queueEmptyEl.style.display = 'none';
+      var empty = !failed && !queueTotal && !agentFiltersActive() && !currentTicket();
+      if (queueErrorEl) queueErrorEl.style.display = failed ? 'block' : 'none';
+      if (queueEmptyEl) queueEmptyEl.style.display = empty ? 'block' : 'none';
+      if (failed || empty) {
         document.getElementById('agentDash').style.display = 'none';
-        return;
+        return false;
       }
-      if (queueErrorEl) queueErrorEl.style.display = 'none';
-      if (!tickets.length) {
-        if (queueEmptyEl) queueEmptyEl.style.display = 'block';
-        document.getElementById('agentDash').style.display = 'none';
-        return;
-      }
-      if (queueEmptyEl) queueEmptyEl.style.display = 'none';
-      document.getElementById('agentDash').style.display = '';
-      renderStats();
-      renderDetail();
-      renderList();
+      return true;
     }
 
     // ---- FR-4 (agent side): pick up ticket changes made elsewhere ----
-    // An admin reassigning/escalating a ticket, or another agent acting on a
-    // shared one, writes to the same `docketTickets` record from a different
-    // tab/window. Without this, this queue would silently go stale until the
-    // agent manually reloads. Mirrors the customer portal's live-update
-    // handling below, but keyed on status+assignedAgent (a reassignment alone
-    // doesn't change status) and re-renders in place rather than toasting.
+    // An admin reassigning/escalating a ticket, or a customer replying, happens
+    // in another browser, so the queue polls: every 4s it reloads the current
+    // page and the stats (never the whole ticket list). A poll only redraws
+    // what changed, keyed on ticketSignature(): redrawing the detail closes
+    // any reassign/escalate/resolve panel an agent is mid-typing in.
     var agentKnownSignature = {};
-    tickets.forEach(function (t) { agentKnownSignature[t.id] = ticketSignature(t); });
+    var agentQueueSeq = 0; // only the newest page request gets shown
+    var agentQueueLoaded = false;
 
-    function applyRemoteAgentUpdate(updated) {
-      if (!updated) return;
-
-      // Only re-render on an actual change — the poll fires every 4s and a
-      // careless unconditional re-render would blow away whatever an agent
-      // is mid-typing in an open reassign/escalate/resolve panel.
-      var changed = updated.length !== tickets.length;
-      updated.forEach(function (t) {
-        var sig = ticketSignature(t);
-        if (agentKnownSignature[t.id] !== sig) changed = true;
-        agentKnownSignature[t.id] = sig;
-      });
-      if (!changed) return;
-
-      tickets = updated;
-      if (selectedId && !tickets.some(function (t) { return t.id === selectedId; })) {
-        selectedId = tickets.length ? tickets[0].id : null;
-      }
-      if (!tickets.length) {
-        document.getElementById('queueEmpty').style.display = 'block';
-        document.getElementById('agentDash').style.display = 'none';
-      } else {
-        document.getElementById('queueEmpty').style.display = 'none';
-        document.getElementById('agentDash').style.display = '';
-        renderStats(); renderDetail(); renderList();
-      }
+    function loadAgentStats() {
+      fetchTicketStats(function (stats) { agentStats = stats; renderStats(); });
     }
 
-    // Initial load. The agent and user directories are warmed first because
-    // normalizeTicket() reads both to resolve assignedAgent and the requester
-    // email the queue search matches against. Wrapped in a named function so
-    // the Retry button (shown on the failed-load state) can call it again.
+    // Every poll, page change and filter change comes through here.
+    function refreshAgentQueue() {
+      var seq = ++agentQueueSeq;
+      loadAgentStats();
+      fetchTickets(agentQueueQuery(), function (rows, total) {
+        if (seq === agentQueueSeq) applyAgentPage(rows, total);
+      });
+    }
+
+    function applyAgentPage(rows, total) {
+      // Past the last page (its tickets were reassigned or filtered away):
+      // step back to the last page that has any.
+      if (!rows.length && total > 0 && queueOffset > 0) {
+        queueOffset = Math.floor((total - 1) / QUEUE_PAGE_SIZE) * QUEUE_PAGE_SIZE;
+        refreshAgentQueue();
+        return;
+      }
+
+      var listChanged = !agentQueueLoaded || total !== queueTotal || rows.length !== tickets.length;
+      rows.forEach(function (t, i) {
+        var sig = ticketSignature(t);
+        if (!tickets[i] || tickets[i].id !== t.id || agentKnownSignature[t.id] !== sig) listChanged = true;
+        agentKnownSignature[t.id] = sig;
+      });
+      tickets = rows;
+      queueTotal = total;
+      agentQueueLoaded = true;
+
+      var detailChanged = syncAgentSelection();
+      if (!showAgentQueueState()) return;
+      if (detailChanged) renderDetail();
+      if (listChanged || detailChanged) renderList();
+    }
+
+    // Keeps the selected ticket current. On this page, its copy comes from the
+    // rows; off it (another page, or filtered out) it's fetched on its own, so
+    // changing page or filter never loses the selection. A selected ticket
+    // that's gone (deleted, or no longer this agent's) gives way to the first
+    // ticket on the page. Returns whether the detail needs redrawing now.
+    function syncAgentSelection() {
+      if (!selectedId) {
+        selectTicket(tickets[0]);
+        return !!selectedId;
+      }
+      var onPage = tickets.filter(function (t) { return t.id === selectedId; })[0];
+      if (onPage) return takeSelectedAgentTicket(onPage);
+
+      var id = selectedId;
+      fetchTicketById(id, function (t) {
+        if (selectedId === id && takeSelectedAgentTicket(t)) renderDetail();
+      }, function (err) {
+        if (selectedId !== id || (err.status !== 404 && err.status !== 403)) return;
+        selectTicket(tickets[0]);
+        if (showAgentQueueState()) { renderDetail(); renderList(); }
+      });
+      return false;
+    }
+
+    // Swaps in a fresher copy of the selected ticket, unless it's older than
+    // the one this tab already has. True if the ticket changed.
+    function takeSelectedAgentTicket(t) {
+      if (selectedTicket && selectedTicket.id === t.id && t.version < selectedTicket.version) return false;
+      var changed = !selectedTicket || ticketSignature(selectedTicket) !== ticketSignature(t);
+      selectedTicket = t;
+      return changed;
+    }
+
+    // Initial load. The agent directory is warmed first because
+    // normalizeTicket() reads it to resolve assignedAgent. Wrapped in a named
+    // function so the Retry button (shown on the failed-load state) can call
+    // it again.
     function loadAgentQueue() {
       withDirectories(function () {
-        fetchTicketsWithRetry(null, function (rows) {
-          tickets = rows;
-          selectedId = tickets.length ? tickets[0].id : null;
-          tickets.forEach(function (t) {
-            agentKnownSignature[t.id] = ticketSignature(t);
-          });
-          bootstrapAgentQueue();
+        var seq = ++agentQueueSeq;
+        loadAgentStats();
+        fetchTicketsWithRetry(agentQueueQuery(), function (rows, total) {
+          if (seq === agentQueueSeq) applyAgentPage(rows, total);
         }, function (err) {
           if (err && err.status === 401 && handleAuthExpired()) return;
-          bootstrapAgentQueue(true);
+          if (!agentQueueLoaded) showAgentQueueState(true);
         });
       });
     }
@@ -3861,23 +3996,16 @@ document.addEventListener('DOMContentLoaded', function () {
     var queueRetryBtn = document.getElementById('queueRetryBtn');
     if (queueRetryBtn) queueRetryBtn.addEventListener('click', loadAgentQueue);
 
-    // The `storage` listener that used to drive this is gone along with the
-    // localStorage ticket store; the poll is now the only path by which this
-    // queue notices a change made elsewhere. Still a no-op until a status or
-    // assignment actually moves, so an open reassign/escalate/resolve panel
-    // doesn't get blown away mid-edit.
-    setInterval(function () {
-      fetchTickets(null, applyRemoteAgentUpdate);
-    }, 4000);
+    setInterval(refreshAgentQueue, 4000);
 
     // SLA warnings depend on the clock as well as the data, so refresh them
     // once a minute even when the poll above sees no change. Deliberately
     // not renderDetail(), which would close any panel mid-edit — only the
     // SLA box in the detail view is updated.
     setInterval(function () {
-      if (!tickets.length) return;
-      renderStats(); renderList();
-      var t = tickets.filter(function (x) { return x.id === selectedId; })[0];
+      if (!agentQueueLoaded) return;
+      renderList();
+      var t = currentTicket();
       if (t) renderSlaBox(document.getElementById('dashSla'), t);
     }, 60000);
   }
@@ -4225,20 +4353,62 @@ document.addEventListener('DOMContentLoaded', function () {
       if (status === 'Escalated') return 'status-escalated';
       return '';
     }
-    function adminIsOpen(status) { return status !== 'Resolved' && status !== 'Closed'; }
+    // `adminTickets` is the loaded page only; adminQueueTotal is how many
+    // tickets match the current search and filters in all.
+    var adminQueueOffset = 0;
+    var adminQueueTotal = 0;
+    var adminStats = null; // GET /api/tickets/stats, for the stat cards
 
-    var adminSelectedId = adminTickets.length ? adminTickets[0].id : null;
+    var adminSelectedId = null;
+    // The selected ticket's latest copy, kept apart from `adminTickets` so the
+    // selection stays put when a page or filter change leaves it off the list.
+    var adminSelectedTicket = null;
+    // adminAssigneeFilter is an agent id, 'unassigned', or '' for anyone.
     var adminSearchQuery = '', adminStatusFilter = '', adminCategoryFilter = '', adminAssigneeFilter = '';
 
+    function currentAdminTicket() {
+      return adminSelectedTicket && adminSelectedTicket.id === adminSelectedId ? adminSelectedTicket : null;
+    }
+
+    function selectAdminTicket(t) {
+      adminSelectedId = t ? t.id : null;
+      adminSelectedTicket = t || null;
+    }
+
+    // Takes in a ticket this tab just changed, wherever it's shown.
+    function storeAdminTicket(updated) {
+      replaceTicketIn(adminTickets, updated);
+      if (adminSelectedTicket && adminSelectedTicket.id === updated.id) adminSelectedTicket = updated;
+      adminKnownSignature[updated.id] = ticketSignature(updated);
+    }
+
+    // The page the list shows, as GET /api/tickets query parameters.
+    function adminQueueQuery() {
+      return {
+        limit: QUEUE_PAGE_SIZE,
+        offset: adminQueueOffset,
+        search: adminSearchQuery.trim(),
+        status: adminStatusFilter,
+        category: adminCategoryFilter,
+        assigned_agent_id: adminAssigneeFilter
+      };
+    }
+
+    function adminFiltersActive() {
+      return !!(adminSearchQuery.trim() || adminStatusFilter || adminCategoryFilter || adminAssigneeFilter);
+    }
+
+    // Counted by the server over every ticket (GET /api/tickets/stats), not
+    // just the loaded page; refreshed with each poll.
     function renderAdminStats() {
-      document.getElementById('adminStatOpen').textContent = adminTickets.filter(function (t) { return adminIsOpen(t.status); }).length;
-      document.getElementById('adminStatCritical').textContent = adminTickets.filter(function (t) { return t.priority === 'Critical' && adminIsOpen(t.status); }).length;
-      var now = Date.now();
-      document.getElementById('adminStatSlaBreached').textContent = adminTickets.filter(function (t) { var a = slaAlert(t, now); return a && a.level === 'breached'; }).length;
-      document.getElementById('adminStatUnassigned').textContent = adminTickets.filter(function (t) { return !t.assignedAgent && adminIsOpen(t.status); }).length;
-      document.getElementById('adminStatResolved').textContent = adminTickets.filter(function (t) { return t.status === 'Resolved' || t.status === 'Closed'; }).length;
-      document.getElementById('adminSidebarTicketCount').textContent = adminTickets.length;
       document.getElementById('adminSidebarAgentCount').textContent = loadAgents().length;
+      if (!adminStats) return;
+      document.getElementById('adminStatOpen').textContent = adminStats.open;
+      document.getElementById('adminStatCritical').textContent = adminStats.critical_open;
+      document.getElementById('adminStatSlaBreached').textContent = adminStats.sla_breached;
+      document.getElementById('adminStatUnassigned').textContent = adminStats.unassigned_open;
+      document.getElementById('adminStatResolved').textContent = adminStats.resolved;
+      document.getElementById('adminSidebarTicketCount').textContent = adminStats.total;
     }
 
     // Same internal-note trail agents leave for reassign/escalate, so an admin's
@@ -4278,14 +4448,14 @@ document.addEventListener('DOMContentLoaded', function () {
     function closeAdminAssignPanel() { adminAssignPanel.style.display = 'none'; }
 
     document.getElementById('adminAssignBtn').addEventListener('click', function () {
-      var t = adminTickets.filter(function (x) { return x.id === adminSelectedId; })[0];
+      var t = currentAdminTicket();
       if (!t) return;
       if (adminAssignPanel.style.display === 'block') { closeAdminAssignPanel(); return; }
       openAdminAssignPanel(t);
     });
     document.getElementById('adminAssignCancelBtn').addEventListener('click', closeAdminAssignPanel);
     document.getElementById('adminAssignConfirmBtn').addEventListener('click', function () {
-      var t = adminTickets.filter(function (x) { return x.id === adminSelectedId; })[0];
+      var t = currentAdminTicket();
       if (!t) return;
       var toId = adminAssignSelect.value; // '' means the Unassigned option was picked
       if (toId === (t.assignedAgentId || '')) { closeAdminAssignPanel(); return; }
@@ -4299,22 +4469,20 @@ document.addEventListener('DOMContentLoaded', function () {
       confirmBtn.disabled = true;
       assignTicket(t, toId, function (updated) {
         confirmBtn.disabled = false;
-        replaceTicketIn(adminTickets, updated);
-        adminKnownSignature[updated.id] = ticketSignature(updated);
+        storeAdminTicket(updated);
         var noteText = toName
           ? (from === 'Unassigned' ? 'Assigned to ' + toName : 'Reassigned from ' + from + ' to ' + toName)
           : 'Unassigned (was ' + from + ')';
         addAdminNote(updated.id, noteText + ' by an admin' + (note ? ' — ' + note : '.'));
         closeAdminAssignPanel();
-        renderAdminStats(); renderAdminDetail(); renderAdminList();
+        renderAdminDetail(); renderAdminList(); refreshAdminConsole();
       }, function (err) {
         confirmBtn.disabled = false;
         if (err && err.latest) {
           // Refused as stale (409): show the ticket as it is now.
-          replaceTicketIn(adminTickets, err.latest);
-          adminKnownSignature[err.latest.id] = ticketSignature(err.latest);
+          storeAdminTicket(err.latest);
           closeAdminAssignPanel();
-          renderAdminStats(); renderAdminDetail(); renderAdminList();
+          renderAdminDetail(); renderAdminList(); refreshAdminConsole();
           alert(err.message);
           return;
         }
@@ -4336,7 +4504,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     document.getElementById('adminDeleteTicketBtn').addEventListener('click', function () {
-      var t = adminTickets.filter(function (x) { return x.id === adminSelectedId; })[0];
+      var t = currentAdminTicket();
       if (!t) return;
       if (!confirm('Permanently delete ' + t.id + ' ("' + t.subject + '")? Its conversation and attachments will be deleted too. This cannot be undone.')) return;
 
@@ -4345,7 +4513,9 @@ document.addEventListener('DOMContentLoaded', function () {
       adminDelete('/api/tickets/' + encodeURIComponent(t.id))
         .then(function () {
           delete adminKnownSignature[t.id];
-          applyRemoteAdminUpdate(adminTickets.filter(function (x) { return x.id !== t.id; }));
+          // Reload so the page's next ticket moves up and gets selected.
+          if (adminSelectedId === t.id) selectAdminTicket(null);
+          refreshAdminConsole();
         })
         .catch(function (err) { alert(err.message || 'Unable to delete this ticket.'); })
         .finally(function () { btn.disabled = false; });
@@ -4353,7 +4523,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function renderAdminDetail() {
       var dash = document.getElementById('adminDash');
-      var t = adminTickets.filter(function (x) { return x.id === adminSelectedId; })[0];
+      var t = currentAdminTicket();
       if (!t) { dash.style.display = 'none'; return; }
       dash.style.display = 'block';
       closeAdminAssignPanel();
@@ -4413,29 +4583,23 @@ document.addEventListener('DOMContentLoaded', function () {
       document.getElementById('adminOpenChatBtn').setAttribute('href', 'ticket-chat.html?ticket=' + encodeURIComponent(t.id) + '&role=admin');
     }
 
+    // `adminTickets` is one page, already searched and filtered by the server
+    // (see adminQueueQuery), so this only draws it.
     function renderAdminList() {
       var listEl = document.getElementById('adminQueueList');
-      var q = adminSearchQuery.trim().toLowerCase();
-      var filtered = adminTickets.filter(function (t) {
-        if (adminStatusFilter && t.status !== adminStatusFilter) return false;
-        if (adminCategoryFilter && t.category !== adminCategoryFilter) return false;
-        if (adminAssigneeFilter === 'Unassigned' && t.assignedAgent) return false;
-        if (adminAssigneeFilter && adminAssigneeFilter !== 'Unassigned' && t.assignedAgent !== adminAssigneeFilter) return false;
-        if (q) {
-          var haystack = (t.id + ' ' + t.subject + ' ' + (t.email || '')).toLowerCase();
-          if (haystack.indexOf(q) === -1) return false;
-        }
-        return true;
+      renderQueuePager(document.getElementById('adminQueuePager'), adminQueueOffset, adminTickets.length, adminQueueTotal, function (offset) {
+        adminQueueOffset = offset;
+        refreshAdminConsole();
       });
 
       listEl.innerHTML = '';
-      if (!filtered.length) {
+      if (!adminTickets.length) {
         listEl.innerHTML = '<p class="queue-no-results">No tickets match your search or filters.</p>';
         return;
       }
 
       var now = Date.now();
-      filtered.forEach(function (t) {
+      adminTickets.forEach(function (t) {
         var row = document.createElement('div');
         var alertInfo = slaAlert(t, now);
         row.className = 'history-row ' + adminStatusClass(t.status) + (alertInfo && alertInfo.level === 'breached' ? ' sla-breached-row' : '');
@@ -4455,9 +4619,9 @@ document.addEventListener('DOMContentLoaded', function () {
             '<span class="history-chip">' + (t.assignedAgent ? escapeHtml(t.assignedAgent) : '<span class="history-unassigned">Unassigned</span>') + '</span>' +
             '<span class="history-status">' + escapeHtml(t.status) + '</span>' +
           '</div>';
-        row.addEventListener('click', function () { adminSelectedId = t.id; renderAdminDetail(); renderAdminList(); });
+        row.addEventListener('click', function () { selectAdminTicket(t); renderAdminDetail(); renderAdminList(); });
         row.addEventListener('keydown', function (e) {
-          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); adminSelectedId = t.id; renderAdminDetail(); renderAdminList(); }
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectAdminTicket(t); renderAdminDetail(); renderAdminList(); }
         });
         listEl.appendChild(row);
       });
@@ -4469,22 +4633,38 @@ document.addEventListener('DOMContentLoaded', function () {
     function populateAssigneeFilter() {
       if (!aqAssignee) return;
       Array.prototype.slice.call(aqAssignee.querySelectorAll('option[data-agent-option]')).forEach(function (opt) { opt.remove(); });
+      // Values are agent ids, which is what the server filters on.
       loadAgents().forEach(function (a) {
         var opt = document.createElement('option');
-        opt.value = a.name; opt.textContent = a.name;
+        opt.value = a.id; opt.textContent = a.name;
         opt.setAttribute('data-agent-option', '1');
         aqAssignee.appendChild(opt);
       });
+      // Rebuilding the options drops the selection; put it back.
+      aqAssignee.value = adminAssigneeFilter;
     }
     populateAssigneeFilter();
+
+    // Search and filters run on the server, across every ticket, and send the
+    // list back to its first page; the selected ticket stays selected.
     var aqSearch = document.getElementById('adminQueueSearchInput');
     var aqStatus = document.getElementById('adminQueueStatusFilter');
     var aqCategory = document.getElementById('adminQueueCategoryFilter');
     var aqClear = document.getElementById('adminQueueClearFilters');
-    if (aqSearch) aqSearch.addEventListener('input', function () { adminSearchQuery = aqSearch.value; renderAdminList(); });
-    if (aqStatus) aqStatus.addEventListener('change', function () { adminStatusFilter = aqStatus.value; renderAdminList(); });
-    if (aqCategory) aqCategory.addEventListener('change', function () { adminCategoryFilter = aqCategory.value; renderAdminList(); });
-    if (aqAssignee) aqAssignee.addEventListener('change', function () { adminAssigneeFilter = aqAssignee.value; renderAdminList(); });
+    function reloadAdminConsoleFromStart() {
+      adminQueueOffset = 0;
+      refreshAdminConsole();
+    }
+    if (aqSearch) {
+      aqSearch.addEventListener('input', debounce(function () {
+        if (adminSearchQuery === aqSearch.value) return;
+        adminSearchQuery = aqSearch.value;
+        reloadAdminConsoleFromStart();
+      }, 300));
+    }
+    if (aqStatus) aqStatus.addEventListener('change', function () { adminStatusFilter = aqStatus.value; reloadAdminConsoleFromStart(); });
+    if (aqCategory) aqCategory.addEventListener('change', function () { adminCategoryFilter = aqCategory.value; reloadAdminConsoleFromStart(); });
+    if (aqAssignee) aqAssignee.addEventListener('change', function () { adminAssigneeFilter = aqAssignee.value; reloadAdminConsoleFromStart(); });
     if (aqClear) {
       aqClear.addEventListener('click', function () {
         adminSearchQuery = ''; adminStatusFilter = ''; adminCategoryFilter = ''; adminAssigneeFilter = '';
@@ -4492,87 +4672,126 @@ document.addEventListener('DOMContentLoaded', function () {
         if (aqStatus) aqStatus.value = '';
         if (aqCategory) aqCategory.value = '';
         if (aqAssignee) aqAssignee.value = '';
-        renderAdminList();
+        reloadAdminConsoleFromStart();
       });
     }
 
-    // Renders whatever `adminTickets` currently holds. Called once the initial
-    // fetch resolves. Pass `failed: true` when the fetch itself errored out
-    // (after retries) — see the matching agent-queue change above for why
-    // this is kept separate from a genuinely empty queue.
-    function bootstrapAdminConsole(failed) {
+    // Shows the load-error or empty state, or else lets the queue show. Pass
+    // `failed: true` when the first load errored out (after retries) — see
+    // showAgentQueueState in the agent queue for why the two are kept apart.
+    // Returns whether the queue itself should be drawn.
+    function showAdminQueueState(failed) {
       var adminQueueEmptyEl = document.getElementById('adminQueueEmpty');
       var adminQueueErrorEl = document.getElementById('adminQueueLoadError');
-      if (failed) {
-        if (adminQueueErrorEl) adminQueueErrorEl.style.display = 'block';
-        if (adminQueueEmptyEl) adminQueueEmptyEl.style.display = 'none';
+      var empty = !failed && !adminQueueTotal && !adminFiltersActive() && !currentAdminTicket();
+      if (adminQueueErrorEl) adminQueueErrorEl.style.display = failed ? 'block' : 'none';
+      if (adminQueueEmptyEl) adminQueueEmptyEl.style.display = empty ? 'block' : 'none';
+      if (failed || empty) {
         document.getElementById('adminDash').style.display = 'none';
-        return;
+        return false;
       }
-      if (adminQueueErrorEl) adminQueueErrorEl.style.display = 'none';
-      if (!adminTickets.length) {
-        if (adminQueueEmptyEl) adminQueueEmptyEl.style.display = 'block';
-        document.getElementById('adminDash').style.display = 'none';
-        return;
-      }
-      if (adminQueueEmptyEl) adminQueueEmptyEl.style.display = 'none';
-      document.getElementById('adminDash').style.display = '';
-      renderAdminStats(); renderAdminDetail(); renderAdminList();
+      return true;
     }
 
     // ---- FR-4 (admin side): pick up ticket changes made elsewhere ----
-    // Same gap as the agent queue — an agent moving a ticket's status (or
-    // another admin reassigning one) writes to `docketTickets` from a
-    // different tab/window, and this console would otherwise sit stale
-    // until reloaded. See the matching block in the agent-queue section
-    // above for the fuller rationale; kept as a separate copy here since
-    // it drives a different ticket array and set of render functions.
+    // Same as the agent queue: every 4s the console reloads the current page
+    // and the stats, and only redraws what changed. Kept as a separate copy
+    // here since it drives a different ticket array and set of render
+    // functions.
     var adminKnownSignature = {};
-    adminTickets.forEach(function (t) { adminKnownSignature[t.id] = ticketSignature(t); });
+    var adminQueueSeq = 0; // only the newest page request gets shown
+    var adminQueueLoaded = false;
 
-    function applyRemoteAdminUpdate(updated) {
-      if (!updated) return;
-
-      var changed = updated.length !== adminTickets.length;
-      updated.forEach(function (t) {
-        var sig = ticketSignature(t);
-        if (adminKnownSignature[t.id] !== sig) changed = true;
-        adminKnownSignature[t.id] = sig;
+    function loadAdminStats() {
+      fetchTicketStats(function (stats) {
+        var countsChanged = !adminStats ||
+          JSON.stringify(adminStats.assigned_by_agent) !== JSON.stringify(stats.assigned_by_agent);
+        adminStats = stats;
+        renderAdminStats();
+        // The agent directory shows each agent's ticket count. Only redrawn
+        // when a count moves, so the poll doesn't swap its rows mid-click.
+        var agentsPanel = document.getElementById('adminAgentsPanel');
+        if (countsChanged && agentsPanel && agentsPanel.style.display !== 'none') renderAgentDirectory();
       });
-      if (!changed) return;
-
-      adminTickets = updated;
-      if (adminSelectedId && !adminTickets.some(function (t) { return t.id === adminSelectedId; })) {
-        adminSelectedId = adminTickets.length ? adminTickets[0].id : null;
-      }
-      if (!adminTickets.length) {
-        document.getElementById('adminQueueEmpty').style.display = 'block';
-        document.getElementById('adminDash').style.display = 'none';
-      } else {
-        document.getElementById('adminQueueEmpty').style.display = 'none';
-        document.getElementById('adminDash').style.display = '';
-        renderAdminStats(); renderAdminDetail(); renderAdminList();
-      }
     }
 
-    // Initial load — directories first, same reason as the agent queue: the
-    // assignee filter and the queue search both match on names and requester
-    // emails that normalizeTicket() resolves from those caches. Wrapped in a
+    // Every poll, page change and filter change comes through here.
+    function refreshAdminConsole() {
+      var seq = ++adminQueueSeq;
+      loadAdminStats();
+      fetchTickets(adminQueueQuery(), function (rows, total) {
+        if (seq === adminQueueSeq) applyAdminPage(rows, total);
+      });
+    }
+
+    function applyAdminPage(rows, total) {
+      // Past the last page (its tickets were deleted or filtered away): step
+      // back to the last page that has any.
+      if (!rows.length && total > 0 && adminQueueOffset > 0) {
+        adminQueueOffset = Math.floor((total - 1) / QUEUE_PAGE_SIZE) * QUEUE_PAGE_SIZE;
+        refreshAdminConsole();
+        return;
+      }
+
+      var listChanged = !adminQueueLoaded || total !== adminQueueTotal || rows.length !== adminTickets.length;
+      rows.forEach(function (t, i) {
+        var sig = ticketSignature(t);
+        if (!adminTickets[i] || adminTickets[i].id !== t.id || adminKnownSignature[t.id] !== sig) listChanged = true;
+        adminKnownSignature[t.id] = sig;
+      });
+      adminTickets = rows;
+      adminQueueTotal = total;
+      adminQueueLoaded = true;
+
+      var detailChanged = syncAdminSelection();
+      if (!showAdminQueueState()) return;
+      if (detailChanged) renderAdminDetail();
+      if (listChanged || detailChanged) renderAdminList();
+    }
+
+    // Keeps the selected ticket current, fetching it on its own when it isn't
+    // on this page — see syncAgentSelection in the agent queue. A deleted
+    // ticket gives way to the first one on the page.
+    function syncAdminSelection() {
+      if (!adminSelectedId) {
+        selectAdminTicket(adminTickets[0]);
+        return !!adminSelectedId;
+      }
+      var onPage = adminTickets.filter(function (t) { return t.id === adminSelectedId; })[0];
+      if (onPage) return takeSelectedAdminTicket(onPage);
+
+      var id = adminSelectedId;
+      fetchTicketById(id, function (t) {
+        if (adminSelectedId === id && takeSelectedAdminTicket(t)) renderAdminDetail();
+      }, function (err) {
+        if (adminSelectedId !== id || err.status !== 404) return;
+        selectAdminTicket(adminTickets[0]);
+        if (showAdminQueueState()) { renderAdminDetail(); renderAdminList(); }
+      });
+      return false;
+    }
+
+    function takeSelectedAdminTicket(t) {
+      if (adminSelectedTicket && adminSelectedTicket.id === t.id && t.version < adminSelectedTicket.version) return false;
+      var changed = !adminSelectedTicket || ticketSignature(adminSelectedTicket) !== ticketSignature(t);
+      adminSelectedTicket = t;
+      return changed;
+    }
+
+    // Initial load — the agent directory first, same reason as the agent
+    // queue: normalizeTicket() resolves assignee names from it. Wrapped in a
     // named function so the Retry button (shown on the failed-load state)
     // can call it again.
     function loadAdminConsole() {
       withDirectories(function () {
-        fetchTicketsWithRetry(null, function (rows) {
-          adminTickets = rows;
-          adminSelectedId = adminTickets.length ? adminTickets[0].id : null;
-          adminTickets.forEach(function (t) {
-            adminKnownSignature[t.id] = ticketSignature(t);
-          });
-          populateAssigneeFilter();
-          bootstrapAdminConsole();
+        var seq = ++adminQueueSeq;
+        populateAssigneeFilter();
+        loadAdminStats();
+        fetchTicketsWithRetry(adminQueueQuery(), function (rows, total) {
+          if (seq === adminQueueSeq) applyAdminPage(rows, total);
         }, function (err) {
           if (err && err.status === 401 && handleAuthExpired()) return;
-          bootstrapAdminConsole(true);
+          if (!adminQueueLoaded) showAdminQueueState(true);
         });
       });
     }
@@ -4580,17 +4799,13 @@ document.addEventListener('DOMContentLoaded', function () {
     var adminQueueRetryBtn = document.getElementById('adminQueueRetryBtn');
     if (adminQueueRetryBtn) adminQueueRetryBtn.addEventListener('click', loadAdminConsole);
 
-    // The `storage` listener is gone with the localStorage ticket store; the
-    // poll is now the only way this console notices a change made elsewhere.
-    setInterval(function () {
-      fetchTickets(null, applyRemoteAdminUpdate);
-    }, 4000);
+    setInterval(refreshAdminConsole, 4000);
 
     // Once-a-minute SLA refresh — see the matching block in the agent queue.
     setInterval(function () {
-      if (!adminTickets.length) return;
-      renderAdminStats(); renderAdminList();
-      var t = adminTickets.filter(function (x) { return x.id === adminSelectedId; })[0];
+      if (!adminQueueLoaded) return;
+      renderAdminList();
+      var t = currentAdminTicket();
       if (t) renderSlaBox(document.getElementById('adminDashSla'), t);
     }, 60000);
 
@@ -4781,8 +4996,10 @@ document.addEventListener('DOMContentLoaded', function () {
     loadAccountHelp();
 
     // ---- Agents: directory list + create ----
-    function ticketCountFor(name) {
-      return adminTickets.filter(function (t) { return t.assignedAgent === name; }).length;
+    // Tickets assigned to the agent, any status, from the server's stats
+    // (assigned_by_agent) rather than the loaded page.
+    function ticketCountFor(agentId) {
+      return (adminStats && adminStats.assigned_by_agent && adminStats.assigned_by_agent[agentId]) || 0;
     }
 
     function renderAgentDirectory() {
@@ -4806,12 +5023,12 @@ document.addEventListener('DOMContentLoaded', function () {
           '</div>' +
           '<div class="history-meta">' +
             '<span class="history-chip">' + escapeHtml(a.email) + '</span>' +
-            '<span class="history-chip">' + escapeHtml(ticketCountFor(a.name)) + ' assigned</span>' +
+            '<span class="history-chip">' + escapeHtml(ticketCountFor(a.id)) + ' assigned</span>' +
             '<span class="history-chip">' + sourceLabel + '</span>' +
             '<button class="btn-ghost btn-danger btn-small" type="button">Remove</button>' +
           '</div>';
         row.querySelector('.btn-danger').addEventListener('click', function () {
-          var assigned = ticketCountFor(a.name);
+          var assigned = ticketCountFor(a.id);
           var msg = 'Remove ' + a.name + ' (' + a.email + ')? They will no longer be able to sign in.' +
             (assigned ? ' Their ' + assigned + ' assigned ticket(s) will be moved back to Unassigned.' : '');
           if (!confirm(msg)) return;
@@ -4826,7 +5043,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 populateAssigneeFilter();
               });
               // Pick up the unassigned tickets now rather than on the next poll.
-              fetchTickets(null, applyRemoteAdminUpdate);
+              refreshAdminConsole();
             })
             .catch(function (err) {
               btn.disabled = false;

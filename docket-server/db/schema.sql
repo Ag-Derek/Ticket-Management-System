@@ -276,6 +276,8 @@ ALTER TABLE admins ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAU
 CREATE INDEX IF NOT EXISTS idx_tickets_user ON tickets(user_id);
 CREATE INDEX IF NOT EXISTS idx_tickets_agent ON tickets(assigned_agent_id);
 CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);
+-- The dashboards' paged ticket list: newest first, id breaking ties.
+CREATE INDEX IF NOT EXISTS idx_tickets_created ON tickets(created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_comments_ticket ON ticket_comments(ticket_id);
 CREATE INDEX IF NOT EXISTS idx_ticket_reads_reader ON ticket_reads(reader_type, reader_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_ticket ON ticket_attachments(ticket_id);
