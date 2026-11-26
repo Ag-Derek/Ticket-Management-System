@@ -21,6 +21,7 @@ const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const EMAIL_FROM = process.env.EMAIL_FROM || 'Docket <onboarding@resend.dev>';
 const APP_URL = (process.env.APP_URL || '').trim().replace(/\/+$/, '') || null;
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const SEND_TIMEOUT_MS = 10000;
 
 if (!RESEND_API_KEY && IS_PRODUCTION) {
   throw new Error('RESEND_API_KEY is not set');
@@ -53,14 +54,25 @@ async function sendEmail({ to, subject, text, html }) {
     return;
   }
 
-  const response = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${RESEND_API_KEY}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ from: EMAIL_FROM, to: [to], subject, text, html })
-  });
+  // Callers wait on this (the sign-in page shows a spinner while a code is
+  // sent), so a Resend request that hangs fails instead of hanging with it.
+  let response;
+  try {
+    response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${RESEND_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ from: EMAIL_FROM, to: [to], subject, text, html }),
+      signal: AbortSignal.timeout(SEND_TIMEOUT_MS)
+    });
+  } catch (err) {
+    if (err.name === 'TimeoutError') {
+      throw new Error(`Resend send timed out after ${SEND_TIMEOUT_MS / 1000}s`);
+    }
+    throw err;
+  }
 
   if (!response.ok) {
     const body = await response.text().catch(() => '');

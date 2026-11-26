@@ -12,28 +12,31 @@
 // Internal notes never trigger an email, and neither does anything posted
 // before unread tracking existed.
 //
-// MESSAGE_REMINDER_MINUTES — wait before emailing, default 30. Set it to 0
+// MESSAGE_REMINDER_MINUTES — wait before emailing, default 10. Set it to 0
 //                            to switch reminders off.
 //
-// Runs inside the API process. A Postgres advisory lock means only one
-// server instance sends at a time, so scaling out never double-emails.
+// Runs inside the API process, with no transaction open while emails send,
+// so chat reads and replies never wait on a pass. Each reminder is claimed
+// with one atomic update before its email goes out, so two passes running
+// at once (or several server instances) still send one email per batch.
+// A failed send releases the claim and is retried on the next pass.
 
 const db = require('../db/connection');
 const { sendEmail, escapeHtml, appLink, greetingFor, buttonHtml, quoteHtml, MUTED } = require('./email');
 const { unreadBaseline } = require('./unread');
 
 const REMINDER_MINUTES = process.env.MESSAGE_REMINDER_MINUTES === undefined
-  ? 30
+  ? 10
   : Number(process.env.MESSAGE_REMINDER_MINUTES);
 const CHECK_INTERVAL_MS = 60 * 1000;
 const MAX_PER_RUN = 50;
-const LOCK_KEY = 'docket-message-reminders';
 
 // Every (ticket, recipient) with public messages that are unread, not yet
 // reminded about, and old enough. `n` counts the unread messages so the
-// email can say "3 new messages".
-async function findDueReminders(client, baseline) {
-  const result = await client.query(
+// email can say "3 new messages"; `reminded_id` is the current
+// last_reminded_comment_id, so a failed send can put it back.
+async function findDueReminders(baseline) {
+  const result = await db.query(
     `WITH pending AS (
        SELECT c.id, c.ticket_id, c.created_at,
               CASE WHEN c.author_type = 'customer' THEN 'agent' ELSE 'customer' END AS reader_type,
@@ -43,7 +46,8 @@ async function findDueReminders(client, baseline) {
        WHERE c.visibility = 'public' AND c.id > $1
      )
      SELECT p.ticket_id, p.reader_type, p.reader_id,
-            MAX(p.id) AS latest_id, COUNT(*)::int AS n, MIN(p.created_at) AS oldest
+            MAX(p.id) AS latest_id, COUNT(*)::int AS n, MIN(p.created_at) AS oldest,
+            COALESCE(MAX(r.last_reminded_comment_id), 0) AS reminded_id
      FROM pending p
      LEFT JOIN ticket_reads r
        ON r.ticket_id = p.ticket_id AND r.reader_type = p.reader_type AND r.reader_id = p.reader_id
@@ -59,12 +63,12 @@ async function findDueReminders(client, baseline) {
   return result.rows;
 }
 
-async function sendReminder(client, due) {
+async function sendReminder(due) {
   const table = due.reader_type === 'customer' ? 'users' : 'agents';
   const [recipientResult, ticketResult, latestResult] = await Promise.all([
-    client.query(`SELECT full_name, email FROM ${table} WHERE id = $1`, [due.reader_id]),
-    client.query('SELECT id, subject FROM tickets WHERE id = $1', [due.ticket_id]),
-    client.query(
+    db.query(`SELECT full_name, email FROM ${table} WHERE id = $1`, [due.reader_id]),
+    db.query('SELECT id, subject FROM tickets WHERE id = $1', [due.ticket_id]),
+    db.query(
       `SELECT c.author_name, c.body,
               (SELECT COUNT(*) FROM ticket_attachments ta WHERE ta.comment_id = c.id)::int AS file_count
        FROM ticket_comments c WHERE c.id = $1`,
@@ -106,37 +110,55 @@ async function sendReminder(client, due) {
   return true;
 }
 
+// Marks the batch as reminded, unless another pass already has (or the
+// recipient read it in the meantime). Returns true when this pass owns it.
+async function claimReminder(due) {
+  const result = await db.query(
+    `INSERT INTO ticket_reads (ticket_id, reader_type, reader_id, last_reminded_comment_id)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (ticket_id, reader_type, reader_id) DO UPDATE
+       SET last_reminded_comment_id = EXCLUDED.last_reminded_comment_id
+       WHERE ticket_reads.last_reminded_comment_id < EXCLUDED.last_reminded_comment_id
+         AND ticket_reads.last_read_comment_id < EXCLUDED.last_reminded_comment_id
+     RETURNING 1`,
+    [due.ticket_id, due.reader_type, due.reader_id, due.latest_id]
+  );
+  return result.rowCount > 0;
+}
+
+// Undoes claimReminder after a failed send, so the next pass retries it.
+// Only if the value is still ours: a newer batch may have been claimed since.
+async function releaseReminder(due) {
+  await db.query(
+    `UPDATE ticket_reads SET last_reminded_comment_id = $5
+     WHERE ticket_id = $1 AND reader_type = $2 AND reader_id = $3
+       AND last_reminded_comment_id = $4`,
+    [due.ticket_id, due.reader_type, due.reader_id, due.latest_id, due.reminded_id]
+  );
+}
+
 // One pass. Exported so it can be run by hand or from a test.
 async function runReminderPass() {
   if (!(REMINDER_MINUTES > 0)) return { skipped: 'disabled', sent: 0 };
   const baseline = await unreadBaseline();
 
-  return db.withTransaction(async (client) => {
-    const lock = await client.query('SELECT pg_try_advisory_xact_lock(hashtext($1)) AS ok', [LOCK_KEY]);
-    if (!lock.rows[0].ok) return { skipped: 'locked', sent: 0 };
-
-    let sent = 0;
-    for (const due of await findDueReminders(client, baseline)) {
-      try {
-        await sendReminder(client, due);
-      } catch (err) {
-        // Not recorded, so it's retried on the next pass.
-        console.error(`[reminders] email for ${due.ticket_id} -> ${due.reader_type} ${due.reader_id} failed:`, err);
-        continue;
-      }
-      // Recorded even when sendReminder found no address to send to, so a
-      // recipient with no email isn't re-checked every minute forever.
-      await client.query(
-        `INSERT INTO ticket_reads (ticket_id, reader_type, reader_id, last_reminded_comment_id)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (ticket_id, reader_type, reader_id) DO UPDATE
-           SET last_reminded_comment_id = GREATEST(ticket_reads.last_reminded_comment_id, EXCLUDED.last_reminded_comment_id)`,
-        [due.ticket_id, due.reader_type, due.reader_id, due.latest_id]
-      );
-      sent++;
+  let sent = 0;
+  for (const due of await findDueReminders(baseline)) {
+    // Claimed before sending. The claim stays even when sendReminder finds
+    // no address to send to, so a recipient with no email isn't re-checked
+    // every minute forever.
+    if (!(await claimReminder(due))) continue;
+    try {
+      await sendReminder(due);
+    } catch (err) {
+      console.error(`[reminders] email for ${due.ticket_id} -> ${due.reader_type} ${due.reader_id} failed:`, err);
+      await releaseReminder(due).catch((releaseErr) =>
+        console.error(`[reminders] couldn't release ${due.ticket_id} -> ${due.reader_type} ${due.reader_id} for retry:`, releaseErr));
+      continue;
     }
-    return { sent };
-  });
+    sent++;
+  }
+  return { sent };
 }
 
 function startMessageReminders() {
