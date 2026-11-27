@@ -48,6 +48,9 @@
     </aside>
 
     <div class="portal-main">
+      <!-- One banner per ticket in Waiting, filled by app.js -->
+      <div class="waiting-banners" id="waitingBanners" style="display:none;"></div>
+
       <div class="card-panel wide">
 
         <!-- Empty state: nothing submitted yet in this browser -->
@@ -142,7 +145,7 @@
             <option>Created</option>
             <option>Assigned</option>
             <option>In Progress</option>
-            <option>Waiting</option>
+            <option value="Waiting">Waiting on you</option>
             <option>Escalated</option>
             <option>Resolved</option>
             <option>Reopened</option>

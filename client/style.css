@@ -115,6 +115,24 @@ a.topbar-cta:hover{background:var(--ink);color:#fff;}
 .history-row.has-unread .history-subject{font-weight:800;}
 /* Unread conversations stay readable on rows that are otherwise faded. */
 .history-row.has-unread.status-resolved,.history-row.has-unread.status-closed{opacity:1;}
+/* Portal: a Waiting ticket needs the customer's reply, so it is marked like an unread one.
+   :not(.active) outranks the amber .status-waiting border but leaves the selected row blue. */
+.history-row.needs-reply:not(.active){border-color:#138A3E;}
+.history-row.needs-reply .history-subject{font-weight:800;}
+
+/* Portal: "your agent needs more information" banners above the ticket card */
+.waiting-banners{display:flex;flex-direction:column;gap:10px;margin-bottom:18px;}
+.waiting-banner{
+  display:flex;align-items:center;gap:12px;background:var(--white);
+  border:1px solid #8A6A00;border-left-width:4px;border-radius:14px;padding:14px 16px;
+}
+.waiting-banner .ic{width:32px;height:32px;border-radius:9px;background:#8A6A00;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;flex:none;}
+.waiting-banner p{margin:0;flex:1;min-width:0;font-size:13.5px;color:var(--ink);overflow-wrap:anywhere;}
+.waiting-banner .btn-amber.btn-inline{flex:none;text-decoration:none;}
+@media (max-width:560px){
+  .waiting-banner{flex-wrap:wrap;}
+  .waiting-banner .btn-amber.btn-inline{width:100%;text-align:center;}
+}
 
 .btn-danger{border-color:#B14A1F;color:#B14A1F;}
 .btn-danger:hover{background:#B14A1F;color:#fff;}

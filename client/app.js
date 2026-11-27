@@ -2073,6 +2073,31 @@ document.addEventListener('DOMContentLoaded', function () {
       return '';
     }
 
+    // The portal speaks to the customer, so Waiting reads as "Waiting on you"
+    // here. The agent and admin consoles keep the plain status name.
+    function portalStatusLabel(status) {
+      return status === 'Waiting' ? 'Waiting on you' : status;
+    }
+
+    // One banner per Waiting ticket at the top of the portal, each linking
+    // straight to that ticket's chat. Rebuilt from `all` on every render, so
+    // a banner goes away as soon as the poll sees the ticket move on.
+    function renderWaitingBanners() {
+      var wrap = document.getElementById('waitingBanners');
+      if (!wrap) return;
+      var waiting = all.filter(function (t) { return t.status === 'Waiting'; });
+      wrap.innerHTML = waiting.map(function (t) {
+        return '<div class="waiting-banner" role="status">' +
+          '<div class="ic">!</div>' +
+          '<p>Your support agent needs more information on <strong>' + escapeHtml(t.id) + '</strong>' +
+            (t.subject ? ' (' + escapeHtml(t.subject) + ')' : '') +
+            '. The fix-time clock is paused until you reply.</p>' +
+          '<a class="btn-amber btn-inline" href="ticket-chat.html?ticket=' + encodeURIComponent(t.id) + '&amp;role=customer">Reply →</a>' +
+        '</div>';
+      }).join('');
+      wrap.style.display = waiting.length ? '' : 'none';
+    }
+
     // Keeps the page's in-memory copies (`all` / `latest`) in sync with a
     // ticket the server just confirmed, so the rest of the page's rendering
     // (history list, filters, active-row highlight) reflects it without a
@@ -2147,7 +2172,7 @@ document.addEventListener('DOMContentLoaded', function () {
       }
 
       var statusBadge = document.getElementById('dashStatusBadge');
-      statusBadge.textContent = t.status || 'Assigned';
+      statusBadge.textContent = portalStatusLabel(t.status || 'Assigned');
       statusBadge.className = 'status-badge ' + portalStatusClass(t.status);
 
       var messageAgentBtn = document.getElementById('messageAgentBtn');
@@ -2322,6 +2347,7 @@ document.addEventListener('DOMContentLoaded', function () {
     var portalSearchQuery = '', portalStatusFilter = '', portalCategoryFilter = '';
 
     function renderHistoryList() {
+      renderWaitingBanners();
       if (!historySection || !historyListEl) return;
       if (!all.length) { historySection.style.display = 'none'; return; }
       historySection.style.display = 'block';
@@ -2345,7 +2371,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
       filtered.forEach(function (t) {
         var row = document.createElement('div');
-        row.className = 'history-row ' + portalStatusClass(t.status) + (t.id === currentTicketId ? ' active' : '');
+        row.className = 'history-row ' + portalStatusClass(t.status) +
+          (t.status === 'Waiting' ? ' needs-reply' : '') +
+          (t.id === currentTicketId ? ' active' : '');
         row.dataset.ticketId = t.id;
         row.tabIndex = 0;
         row.setAttribute('role', 'button');
@@ -2359,7 +2387,7 @@ document.addEventListener('DOMContentLoaded', function () {
             '<span class="history-chip">' + escapeHtml(t.category) + '</span>' +
             '<span class="history-chip">' + escapeHtml(t.priority) + '</span>' +
             '<span class="history-chip">' + escapeHtml(t.team) + '</span>' +
-            '<span class="history-status">' + escapeHtml(t.status) + '</span>' +
+            '<span class="history-status">' + escapeHtml(portalStatusLabel(t.status)) + '</span>' +
           '</div>';
         row.addEventListener('click', function () { showTicketDetails(t); });
         row.addEventListener('keydown', function (e) {
@@ -3152,7 +3180,7 @@ document.addEventListener('DOMContentLoaded', function () {
         '<div class="toast-body">' +
           '<p class="toast-title">' + escapeHtml(ticket.id) + '</p>' +
           '<p class="toast-sub">' + (ticket.subject ? escapeHtml(ticket.subject) + ' — ' : '') +
-            'now <strong>' + escapeHtml(toStatus) + '</strong> (was ' + escapeHtml(fromStatus || 'Created') + ')</p>' +
+            'now <strong>' + escapeHtml(portalStatusLabel(toStatus)) + '</strong> (was ' + escapeHtml(portalStatusLabel(fromStatus || 'Created')) + ')</p>' +
         '</div>' +
         '<button type="button" class="toast-close" aria-label="Dismiss notification">✕</button>';
       wrap.appendChild(toast);
